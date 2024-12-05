@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2021-2022 Nicolas Surribas
+# Copyright (C) 2021-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,7 +21,7 @@
 import asyncio
 import json
 import os
-from typing import List, Iterator, Set
+from typing import List, Iterator, Set, Optional
 import re
 from itertools import cycle
 from functools import lru_cache
@@ -36,10 +37,9 @@ import dns.name
 import dns.resolver
 
 from wapitiCore.main.log import log_red, logging, log_verbose
-from wapitiCore.net.web import Request
+from wapitiCore.net import Request, Response
 from wapitiCore.attack.attack import Attack
-from wapitiCore.language.vulnerability import _
-from wapitiCore.definitions.subdomain_takeovers import NAME, WSTG_CODE
+from wapitiCore.definitions.subdomain_takeovers import SubdomainTakeoverFinding
 
 
 FINGERPRINTS_FILENAME = "takeover_fingerprints.json"
@@ -144,7 +144,7 @@ class TakeoverChecker:
 
                         return True
 
-                    # Otherwise if the pointed domain doesn't exists if may be enough
+                    # Otherwise if the pointed domain doesn't exist it may be enough
                     if service_entry["nxdomain"]:
                         try:
                             await dns.asyncresolver.resolve(domain)
@@ -197,16 +197,18 @@ class ModuleTakeover(Attack):
     """Detect subdomains vulnerable to takeover (CNAME records pointing to non-existent and/or available domains)"""
     name = "takeover"
 
-    def __init__(self, crawler, persister, attack_options, stop_event):
-        super().__init__(crawler, persister, attack_options, stop_event)
+    def __init__(self, crawler, persister, attack_options, crawler_configuration):
+        super().__init__(crawler, persister, attack_options, crawler_configuration)
         self.processed_domains = set()
         self.takeover = TakeoverChecker()
 
-    async def must_attack(self, request: Request):
+    async def must_attack(self, request: Request, response: Optional[Response] = None):
         try:
             root_domain = get_root_domain(request.hostname)
         except (TldDomainNotFound, TldBadUrl):
             # If the hostname part is an IP or is invalid we can't do subdomain enumeration obviously
+            return False
+        if response.is_directory_redirection:
             return False
 
         if root_domain in self.processed_domains:
@@ -230,9 +232,6 @@ class ModuleTakeover(Attack):
                         await asyncio.sleep(.01)
                     else:
                         break
-
-                if self._stop_event.is_set():
-                    break
 
         # send stop command to every worker
         for __ in range(CONCURRENT_TASKS):
@@ -274,7 +273,7 @@ class ModuleTakeover(Attack):
                     if cname in bad_responses:
                         continue
 
-                    log_verbose(_(f"Record {domain} points to {cname}"))
+                    log_verbose(f"Record {domain} points to {cname}")
 
                     try:
                         if get_root_domain(cname) == root_domain:
@@ -286,17 +285,16 @@ class ModuleTakeover(Attack):
 
                     if await self.takeover.check(domain, cname):
                         log_red("---")
-                        log_red(_(f"CNAME {domain} to {cname} seems vulnerable to takeover"))
+                        log_red(f"CNAME {domain} to {cname} seems vulnerable to takeover")
                         log_red("---")
 
-                        await self.add_vuln_high(
-                            category=NAME,
-                            info=_(f"CNAME {domain} to {cname} seems vulnerable to takeover"),
+                        await self.add_high(
+                            finding_class=SubdomainTakeoverFinding,
+                            info=f"CNAME {domain} to {cname} seems vulnerable to takeover",
                             request=Request(f"https://{domain}/"),
-                            wstg=WSTG_CODE
                         )
 
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         tasks = []
         sub_queue = asyncio.Queue(maxsize=CONCURRENT_TASKS)
         tasks.append(asyncio.create_task(self.feed_queue(sub_queue, request.hostname)))

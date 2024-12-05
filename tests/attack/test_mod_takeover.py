@@ -1,4 +1,4 @@
-from asyncio import Event
+from unittest.mock import AsyncMock
 
 import httpx
 import respx
@@ -8,11 +8,11 @@ import dns
 import dns.message
 import dns.resolver
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
 from wapitiCore.attack.mod_takeover import ModuleTakeover, TakeoverChecker
-from tests import AsyncMock
+
 
 CNAME_TEMPLATE = """id 5395
 opcode QUERY
@@ -62,7 +62,7 @@ async def test_unregistered_cname():
             async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
                 options = {"timeout": 10, "level": 2}
 
-                module = ModuleTakeover(crawler, persister, options, Event())
+                module = ModuleTakeover(crawler, persister, options, crawler_configuration)
 
                 for request in all_requests:
                     await module.attack(request)

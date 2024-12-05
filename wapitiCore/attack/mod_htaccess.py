@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2009-2022 Nicolas Surribas
+# Copyright (C) 2009-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # Original authors :
 # Anthony DUBOCAGE
@@ -21,12 +22,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+from typing import Optional
+
 from httpx import RequestError
 
 from wapitiCore.attack.attack import Attack
-from wapitiCore.language.vulnerability import _
-from wapitiCore.definitions.htaccess import NAME, WSTG_CODE
-from wapitiCore.net.web import Request
+from wapitiCore.definitions.htaccess import HtaccessBypassFinding
+from wapitiCore.net import Request, Response
 from wapitiCore.main.log import log_red, log_verbose
 
 
@@ -40,15 +42,19 @@ class ModuleHtaccess(Attack):
     do_get = True
     do_post = True
 
-    async def must_attack(self, request: Request):
+    async def must_attack(self, request: Request, response: Optional[Response] = None):
         if request.path in self.attacked_get:
             return False
 
-        return request.status in (401, 402, 403, 407)
+        if response.is_directory_redirection:
+            return False
 
-    async def attack(self, request: Request):
+        return response.status in (401, 402, 403, 407)
+
+    async def attack(self, request: Request, response: Optional[Response] = None):
         url = request.path
         referer = request.referer
+        original_status = response.status
         headers = {}
         if referer:
             headers["referer"] = referer
@@ -66,21 +72,17 @@ class ModuleHtaccess(Attack):
             unblocked_content = response.content
 
             log_red("---")
-            await self.add_vuln_medium(
+            await self.add_medium(
                 request_id=request.path_id,
-                category=NAME,
+                finding_class=HtaccessBypassFinding,
                 request=evil_req,
-                info=_("{0} bypassable weak restriction").format(evil_req.url),
-                wstg=WSTG_CODE,
+                info=f"{evil_req.url} bypassable weak restriction",
                 response=response
             )
-            log_red(_("Weak restriction bypass vulnerability: {0}"), evil_req.url)
-            log_red(_("HTTP status code changed from {0} to {1}").format(
-                request.status,
-                response.status
-            ))
+            log_red(f"Weak restriction bypass vulnerability: {evil_req.url}")
+            log_red(f"HTTP status code changed from {original_status} to {response.status}")
 
-            log_verbose(_("Source code:"))
+            log_verbose("Source code:")
             log_verbose(unblocked_content)
             log_red("---")
 

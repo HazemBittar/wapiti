@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2008-2022 Nicolas Surribas
+# Copyright (C) 2008-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,21 +17,22 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-from configparser import ConfigParser
-from os.path import join as path_join
-from collections import defaultdict, namedtuple
 import re
+from collections import defaultdict, namedtuple
+from os.path import join as path_join
+from typing import Optional, Iterator
 
-from httpx import ReadTimeout, RequestError
+from httpx import ReadTimeout, RequestError, InvalidURL
 
-from wapitiCore.main.log import log_red, log_orange, log_verbose
-from wapitiCore.attack.attack import Attack, PayloadReader
-from wapitiCore.language.vulnerability import Messages, _
-from wapitiCore.definitions.file import NAME, WSTG_CODE
-from wapitiCore.definitions.internal_error import WSTG_CODE as INTERNAL_ERROR_WSTG_CODE
-from wapitiCore.definitions.resource_consumption import WSTG_CODE as RESOURCE_CONSUMPTION_WSTG_CODE
-from wapitiCore.net.web import Request
-
+from wapitiCore.main.log import log_red, log_orange, log_verbose, logging
+from wapitiCore.attack.attack import Attack, Parameter
+from wapitiCore.model import PayloadInfo
+from wapitiCore.parsers.ini_payload_parser import IniPayloadReader, replace_tags
+from wapitiCore.language.vulnerability import Messages
+from wapitiCore.definitions.file import PathTraversalFinding
+from wapitiCore.definitions.internal_error import InternalErrorFinding
+from wapitiCore.definitions.resource_consumption import ResourceConsumptionFinding
+from wapitiCore.net import Request, Response
 
 PHP_WARNING_REGEXES = [
     # Most useful regex must be at top
@@ -45,7 +47,6 @@ PHP_WARNING_REGEXES = [
         r"on line (?:<\w+>)?(\d*)(?:</\w+>)?"
     )
 ]
-
 
 FileWarning = namedtuple('FileWarning', ['pattern', 'function', 'uri', 'path'])
 PHP_FUNCTIONS = (
@@ -101,45 +102,22 @@ def find_warning_message(data, payload):
 
 class ModuleFile(Attack):
     """Detect file-related vulnerabilities such as directory traversal and include() vulnerabilities."""
-
-    PAYLOADS_FILE = "fileHandlingPayloads.ini"
-
     name = "file"
 
-    def __init__(self, crawler, persister, attack_options, stop_event):
-        Attack.__init__(self, crawler, persister, attack_options, stop_event)
-        self.rules_to_messages = {}
-        self.payload_to_rules = {}
+    def __init__(self, crawler, persister, attack_options, crawler_configuration):
+        Attack.__init__(self, crawler, persister, attack_options, crawler_configuration)
         self.known_false_positives = defaultdict(set)
         self.mutator = self.get_mutator()
 
-    @property
-    def payloads(self):
+    def get_payloads(self, _: Optional[Request] = None, __: Optional[Parameter] = None) -> Iterator[PayloadInfo]:
         """Load the payloads from the specified file"""
-        if not self.PAYLOADS_FILE:
-            return []
+        parser = IniPayloadReader(path_join(self.DATA_DIR, "fileHandlingPayloads.ini"))
+        parser.add_key_handler("payload", replace_tags)
+        parser.add_key_handler("payload", lambda x: x.replace("[EXTERNAL_ENDPOINT]", self.external_endpoint))
+        parser.add_key_handler("messages", lambda x: x.splitlines())
+        parser.add_key_handler("rules", lambda x: x.splitlines())
 
-        payloads = []
-
-        config_reader = ConfigParser(interpolation=None)
-        with open(path_join(self.DATA_DIR, self.PAYLOADS_FILE), encoding='utf-8') as payload_file:
-            config_reader.read_file(payload_file)
-
-        # No time based payloads here so we don't care yet
-        reader = PayloadReader(self.options)
-
-        for section in config_reader.sections():
-            clean_payload, original_flags = reader.process_line(config_reader[section]["payload"])
-            flags = original_flags.with_section(section)
-
-            rules = config_reader[section]["rules"].splitlines()
-            messages = [_(message) for message in config_reader[section]["messages"].splitlines()]
-            self.payload_to_rules[section] = rules
-            self.rules_to_messages.update(dict(zip(rules, messages)))
-
-            payloads.append((clean_payload, flags))
-
-        return payloads
+        yield from parser
 
     async def is_false_positive(self, request, pattern):
         """Check if the response for a given request contains an expected pattern."""
@@ -164,7 +142,7 @@ class ModuleFile(Attack):
 
         return False
 
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         warned = False
         timeouted = False
         page = request.path
@@ -172,7 +150,8 @@ class ModuleFile(Attack):
         current_parameter = None
         vulnerable_parameter = False
 
-        for mutated_request, parameter, payload, flags in self.mutator.mutate(request):
+        for mutated_request, parameter, payload_info in self.mutator.mutate(request, self.get_payloads):
+
             if current_parameter != parameter:
                 # Forget what we know about current parameter
                 current_parameter = parameter
@@ -196,36 +175,37 @@ class ModuleFile(Attack):
                 log_orange(mutated_request.http_repr())
                 log_orange("---")
 
-                if parameter == "QUERY_STRING":
+                if parameter.is_qs_injection:
                     anom_msg = Messages.MSG_QS_TIMEOUT
                 else:
-                    anom_msg = Messages.MSG_PARAM_TIMEOUT.format(parameter)
+                    anom_msg = Messages.MSG_PARAM_TIMEOUT.format(parameter.display_name)
 
-                await self.add_anom_medium(
+                await self.add_medium(
                     request_id=request.path_id,
-                    category=Messages.RES_CONSUMPTION,
+                    finding_class=ResourceConsumptionFinding,
                     request=mutated_request,
                     info=anom_msg,
-                    parameter=parameter,
-                    wstg=RESOURCE_CONSUMPTION_WSTG_CODE
+                    parameter=parameter.display_name,
                 )
                 timeouted = True
             except RequestError:
                 self.network_errors += 1
                 continue
+            except InvalidURL:
+                logging.warning(f"Invalid URL: {mutated_request.url} potentially vulnerable to open redirect")
+                continue
             else:
                 file_warning = None
-                # original_payload = self.payload_to_rules[flags.section]
-                for rule in self.payload_to_rules[flags.section]:
+                for i, rule in enumerate(payload_info.rules):
                     if rule in response.content:
                         found_pattern = rule
-                        vulnerable_method = self.rules_to_messages[rule]
+                        vulnerable_method = payload_info.messages[i]
                         inclusion_succeed = True
                         break
                 else:
-                    # No successful inclusion or directory traversal but perhaps we can control something
+                    # No successful inclusion or directory traversal, but perhaps we can control something
                     inclusion_succeed = False
-                    file_warning = find_warning_message(response.content, payload)
+                    file_warning = find_warning_message(response.content, payload_info.payload)
                     if file_warning:
                         found_pattern = file_warning.pattern
                         vulnerable_method = file_warning.function
@@ -243,40 +223,37 @@ class ModuleFile(Attack):
                             continue
 
                         # Mark as eventuality
-                        vulnerable_method = _("Possible {0} vulnerability").format(vulnerable_method)
+                        vulnerable_method = f"Possible {vulnerable_method} vulnerability"
                         warned = True
 
-                    # An error message implies that a vulnerability may exists
-                    if parameter == "QUERY_STRING":
+                    # An error message implies that a vulnerability may exist
+                    if parameter.is_qs_injection:
                         vuln_message = Messages.MSG_QS_INJECT.format(vulnerable_method, page)
                     else:
-                        vuln_message = _("{0} via injection in the parameter {1}").format(
-                            vulnerable_method, parameter
-                        )
+                        vuln_message = f"{vulnerable_method} via injection in the parameter {parameter.display_name}"
 
                     constraint_message = ""
                     if file_warning and file_warning.uri:
-                        constraints = has_prefix_or_suffix(payload, file_warning.uri)
+                        constraints = has_prefix_or_suffix(payload_info.payload, file_warning.uri)
                         if constraints:
-                            constraint_message += _("Constraints: {}").format(", ".join(constraints))
+                            constraint_message += "Constraints: " + ", ".join(constraints)
                             vuln_message += " (" + constraint_message + ")"
 
-                    await self.add_vuln_critical(
+                    await self.add_critical(
                         request_id=request.path_id,
-                        category=NAME,
+                        finding_class=PathTraversalFinding,
                         request=mutated_request,
                         info=vuln_message,
-                        parameter=parameter,
-                        wstg=WSTG_CODE,
-                        response=response
+                        parameter=parameter.display_name,
+                        response=response,
                     )
 
                     log_red("---")
                     log_red(
-                        Messages.MSG_QS_INJECT if parameter == "QUERY_STRING" else Messages.MSG_PARAM_INJECT,
+                        Messages.MSG_QS_INJECT if parameter.is_qs_injection else Messages.MSG_PARAM_INJECT,
                         vulnerable_method,
                         page,
-                        parameter
+                        parameter.display_name
                     )
 
                     if constraint_message:
@@ -293,18 +270,17 @@ class ModuleFile(Attack):
 
                 elif response.is_server_error and not saw_internal_error:
                     saw_internal_error = True
-                    if parameter == "QUERY_STRING":
+                    if parameter.is_qs_injection:
                         anom_msg = Messages.MSG_QS_500
                     else:
-                        anom_msg = Messages.MSG_PARAM_500.format(parameter)
+                        anom_msg = Messages.MSG_PARAM_500.format(parameter.display_name)
 
-                    await self.add_anom_high(
+                    await self.add_high(
                         request_id=request.path_id,
-                        category=Messages.ERROR_500,
+                        finding_class=InternalErrorFinding,
                         request=mutated_request,
                         info=anom_msg,
-                        parameter=parameter,
-                        wstg=INTERNAL_ERROR_WSTG_CODE,
+                        parameter=parameter.display_name,
                         response=response
                     )
 

@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2021-2022 Nicolas Surribas
+# Copyright (C) 2021-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,43 +18,53 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-from wapitiCore.language.language import _
+from typing import List
 
-TYPE = "vulnerability"
+from wapitiCore.definitions.base import FindingBase
 
-NAME = _("HttpOnly Flag cookie")
-SHORT_NAME = NAME
 
-WSTG_CODE = ["WSTG-CONF-07", "WSTG-SESS-02"]
+class HttpOnlyFinding(FindingBase):
+    @classmethod
+    def name(cls) -> str:
+        return "HttpOnly Flag cookie"
 
-DESCRIPTION = _(
-    "HttpOnly is an additional flag included in a Set-Cookie HTTP response header."
-) + " " + _(
-    "Using the HttpOnly flag when generating a cookie helps mitigate the risk of client side script accessing "
-    "the protected cookie (if the browser supports it)."
-)
-
-SOLUTION = _(
-    "While creation of the cookie, make sure to set the HttpOnly Flag to True."
-)
-
-REFERENCES = [
-    {
-        "title": "OWASP: HTTP Strict Transport Security",
-        "url": (
-            "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/"
-            "02-Configuration_and_Deployment_Management_Testing/07-Test_HTTP_Strict_Transport_Security"
+    @classmethod
+    def description(cls) -> str:
+        return (
+            "HttpOnly is an additional flag included in a Set-Cookie HTTP response header. "
+            "Using the HttpOnly flag when generating a cookie helps mitigate the risk of client side script accessing "
+            "the protected cookie (if the browser supports it)."
         )
-    },
-    {
-        "title": "OWASP: Testing for Cookies Attributes",
-        "url": (
-            "https://owasp.org/www-project-web-security-testing-guide/stable/4-Web_Application_Security_Testing/"
-            "06-Session_Management_Testing/02-Testing_for_Cookies_Attributes.html"
-        )
-    },
-    {
-        "title": "OWASP: HttpOnly",
-        "url": "https://owasp.org/www-community/HttpOnly"
-    }
-]
+
+    @classmethod
+    def references(cls) -> list:
+        return [
+            {
+                "title": "OWASP: Testing for Cookies Attributes",
+                "url": (
+                    "https://owasp.org/www-project-web-security-testing-guide/stable/"
+                    "4-Web_Application_Security_Testing/"
+                    "06-Session_Management_Testing/02-Testing_for_Cookies_Attributes.html"
+                )
+            },
+            {
+                "title": "OWASP: HttpOnly",
+                "url": "https://owasp.org/www-community/HttpOnly"
+            }
+        ]
+
+    @classmethod
+    def solution(cls) -> str:
+        return "While creation of the cookie, make sure to set the HttpOnly Flag to True."
+
+    @classmethod
+    def short_name(cls) -> str:
+        return cls.name()
+
+    @classmethod
+    def type(cls) -> str:
+        return "vulnerability"
+
+    @classmethod
+    def wstg_code(cls) -> List[str]:
+        return ["WSTG-SESS-02"]

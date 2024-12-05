@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2022 Nicolas SURRIBAS
+# Copyright (C) 2023 Nicolas SURRIBAS
+# Copyright (C) 2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,30 +18,30 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 import asyncio
-from collections import deque, defaultdict
+from collections import defaultdict
 import pickle
 import math
-from typing import Tuple, List, Optional, AsyncIterator
+from typing import Tuple, List, Optional, AsyncIterator, Deque
 from urllib.parse import urlparse
 import re
+from http.cookiejar import CookieJar
 
 # Third-parties
 import httpx
 
 # Internal libraries
-from wapitiCore.language.language import _
 from wapitiCore.net import web
 
 from wapitiCore.net.response import Response
-from wapitiCore.net.web import Request, make_absolute
-from wapitiCore.net.html import Html
+from wapitiCore.net import Request, make_absolute
+from wapitiCore.parsers.html_parser import Html
+from wapitiCore.parsers.javascript import extract_js_redirections
 from wapitiCore.main.log import logging, log_verbose
+from wapitiCore.net.classes import CrawlerConfiguration
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.net import swf
-from wapitiCore.net import lamejs
+from wapitiCore.parsers import swf
 from wapitiCore.net import jsparser_angular
-from wapitiCore.net.scope import Scope
-
+from wapitiCore.net.scope import Scope, wildcard_translate
 
 MIME_TEXT_TYPES = ('text/', 'application/xml')
 # Limit page size to 2MB
@@ -63,27 +64,15 @@ EXCLUDED_MEDIA_EXTENSIONS = (
 BAD_URL_REGEX = re.compile(r"https?:/[^/]+")
 
 
-def wildcard_translate(pattern):
-    """Translate a wildcard PATTERN to a regular expression object.
-
-    This is largely inspired by fnmatch.translate.
-    """
-
-    i, length = 0, len(pattern)
-    res = ''
-    while i < length:
-        char = pattern[i]
-        i += 1
-        if char == '*':
-            res += r'.*'
-        else:
-            res += re.escape(char)
-    return re.compile(res + r'\Z(?ms)')
-
-
 class Explorer:
-    def __init__(self, crawler_instance: AsyncCrawler, scope: Scope, stop_event: asyncio.Event, parallelism: int = 8):
-        self._crawler = crawler_instance
+    def __init__(
+            self,
+            crawler_configuration: CrawlerConfiguration,
+            scope: Scope,
+            stop_event: asyncio.Event,
+            parallelism: int = 8
+    ):
+        self._crawler = AsyncCrawler.with_configuration(crawler_configuration)
         self._scope = scope
         self._max_depth = 20
         self._max_page_size = MAX_PAGE_SIZE
@@ -94,6 +83,7 @@ class Explorer:
         self._hostnames = set()
         self._regexes = []
         self._processed_requests = []
+        self._cookiejar = CookieJar()
 
         # Locking required for writing to the following structures
         self._file_counts = defaultdict(int)
@@ -184,6 +174,20 @@ class Explorer:
     def is_forbidden(self, candidate_url: str):
         return any(regex.match(candidate_url) for regex in self._regexes)
 
+    def has_too_many_parameters(self, request: Request) -> bool:
+        if self._qs_limit:
+            if request.parameters_count:
+                try:
+                    if self._pattern_counts[
+                        request.pattern
+                    ] >= 220 / (math.exp(request.parameters_count * self._qs_limit) ** 2):
+                        return True
+                except OverflowError:
+                    # Oh boy... that's not good to try to attack a form with more than 600 input fields
+                    # but I guess insane mode can do it as it is insane
+                    return True
+        return False
+
     def extract_links(self, response: Response, request) -> List:
         swf_links = []
         js_links = []
@@ -191,13 +195,16 @@ class Explorer:
 
         new_requests = []
 
+        if response.is_redirect and self._scope.check(response.redirection_url):
+            allowed_links.append(response.redirection_url)
+
         if "application/x-shockwave-flash" in response.type or request.file_ext == "swf":
             try:
                 swf_links = swf.extract_links_from_swf(response.bytes)
             except Exception:  # pylint: disable=broad-except
                 pass
         elif "/x-javascript" in response.type or "/x-js" in response.type or "/javascript" in response.type:
-            js_links = lamejs.LameJs(response.content).get_links()
+            js_links = extract_js_redirections(response.content)
             js_links += jsparser_angular.JsParserAngular(response.url, response.content).get_links()
 
         elif response.type.startswith(MIME_TEXT_TYPES):
@@ -273,7 +280,7 @@ class Explorer:
 
         return new_requests
 
-    async def async_analyze(self, request) -> Tuple[bool, List, Optional[Response]]:
+    async def _async_analyze(self, request) -> Tuple[bool, List, Optional[Response]]:
         async with self._sem:
             self._processed_requests.append(request)  # thread safe
 
@@ -303,7 +310,7 @@ class Explorer:
                 logging.debug(f"{exception} with url {resource_url}")  # debug
                 return False, [], None
             except (ConnectionError, httpx.RequestError) as error:
-                logging.error(_("[!] {} with URL {}").format(error.__class__.__name__, resource_url))
+                logging.error(f"[!] {error.__class__.__name__} with URL {resource_url}")
                 return False, [], None
 
             if self._max_files_per_dir:
@@ -332,14 +339,12 @@ class Explorer:
             await asyncio.sleep(0)
             resources = self.extract_links(response, request)
             # TODO: there's more situations where we would not want to attack the resource... must check this
-            if response.is_directory_redirection:
-                return False, resources, response
 
             return True, resources, response
 
     async def async_explore(
             self,
-            to_explore: deque,
+            to_explore: Deque[Request],
             excluded_urls: list = None
     ) -> AsyncIterator[Tuple[Request, Response]]:
         """Explore a single TLD or the whole Web starting with a URL
@@ -352,16 +357,11 @@ class Explorer:
         @rtype: generator
         """
         if isinstance(excluded_urls, list):
-            while True:
-                try:
-                    bad_request = excluded_urls.pop()
-                except IndexError:
-                    break
-                else:
-                    if isinstance(bad_request, str):
-                        self._regexes.append(wildcard_translate(bad_request))
-                    elif isinstance(bad_request, web.Request):
-                        self._processed_requests.append(bad_request)
+            for bad_request in excluded_urls:
+                if isinstance(bad_request, str):
+                    self._regexes.append(wildcard_translate(bad_request))
+                elif isinstance(bad_request, web.Request):
+                    self._processed_requests.append(bad_request)
 
         if self._max_depth < 0:
             return
@@ -379,15 +379,10 @@ class Explorer:
                     break
 
                 request = to_explore.popleft()
-                if not isinstance(request, web.Request):
-                    # We treat start_urls as if they are all valid URLs (ie in scope)
-                    request = web.Request(request, link_depth=0)
-
                 if request in self._processed_requests:
                     continue
 
                 resource_url = request.url
-
                 if request.link_depth > self._max_depth:
                     continue
 
@@ -396,22 +391,13 @@ class Explorer:
                     continue
 
                 # Won't enter if qs_limit is 0 (aka insane mode)
-                if self._qs_limit:
-                    if request.parameters_count:
-                        try:
-                            if self._pattern_counts[
-                                request.pattern
-                            ] >= 220 / (math.exp(request.parameters_count * self._qs_limit) ** 2):
-                                continue
-                        except OverflowError:
-                            # Oh boy... that's not good to try to attack a form with more than 600 input fields
-                            # but I guess insane mode can do it as it is insane
-                            continue
+                if self.has_too_many_parameters(request):
+                    continue
 
                 if self.is_forbidden(resource_url):
                     continue
 
-                task = asyncio.create_task(self.async_analyze(request))
+                task = asyncio.create_task(self._async_analyze(request))
                 task_to_request[task] = request
 
             if task_to_request:
@@ -458,3 +444,11 @@ class Explorer:
 
             if not task_to_request and (self._stopped.is_set() or not to_explore):
                 break
+
+    async def clean(self):
+        self._cookiejar = self._crawler.cookie_jar
+        await self._crawler.close()
+
+    @property
+    def cookie_jar(self):
+        return self._cookiejar

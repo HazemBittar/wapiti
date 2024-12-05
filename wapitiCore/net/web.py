@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2008-2022 Nicolas Surribas
+# Copyright (C) 2008-2023 Nicolas Surribas
+# Copyright (C) 2020-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -95,7 +96,8 @@ def urlencode(query, safe='', encoding=None, errors=None, quote_via=quote) -> st
 
 
 def parse_qsl(
-        query_string, strict_parsing=False, encoding='utf-8', errors='replace', max_num_fields=None
+        query_string: str, strict_parsing: bool = False,
+        encoding: str = 'utf-8', errors: str = 'replace', max_num_fields: Optional[int] = None
 ) -> List[Tuple[str, str]]:
     """Parse a query given as a string argument.
         Arguments:
@@ -181,6 +183,20 @@ def make_absolute(base: str, url: str, allow_fragments=True) -> str:
         # malformed URL, for example "Invalid IPv6 URL" errors due to square brackets
         return ""
 
+    try:
+        # urlparse tries to convert port in base10. an error is raised if port is not digits
+        port = parts.port
+    except ValueError:
+        port = None
+
+    if (
+            (parts.scheme == "http" and port == 80) or
+            (parts.scheme == "https" and port == 443)
+    ):
+        # Remove the port number if it is not necessary, be careful with IPv6 addresses:
+        # don't use parts.hostname as it removes square brackets
+        parts = parts._replace(netloc=parts.netloc.rsplit(":", 1)[0])
+
     query_string = parts.query
     url_path = parts.path or '/'
     url_path = posixpath.normpath(url_path.replace("\\", "/"))
@@ -204,29 +220,10 @@ def make_absolute(base: str, url: str, allow_fragments=True) -> str:
     if parts.scheme:
         if parts.scheme in ('http', 'https'):
             if parts.netloc and parts.netloc != "http:":  # malformed url
-                netloc = parts.netloc
-                try:
-                    # urlparse tries to convert port in base10. an error is raised if port is not digits
-                    port = parts.port
-                except ValueError:
-                    port = None
-
-                if (parts.scheme == "https" and port == 443) or (parts.scheme == "http" and port == 80):
-                    # Beware of IPv6 addresses
-                    netloc = parts.netloc.rsplit(":", 1)[0]
-                absolute_url = urlunparse((parts.scheme, netloc, url_path, parts.params, query_string, ''))
+                absolute_url = urlunparse((parts.scheme, parts.netloc, url_path, parts.params, query_string, ''))
     elif url.startswith("//"):
         if parts.netloc:
-            netloc = parts.netloc
-            try:
-                port = parts.port
-            except ValueError:
-                port = None
-
-            if (parts.scheme == "https" and port == 443) or (parts.scheme == "http" and port == 80):
-                # Beware of IPv6 addresses
-                netloc = parts.netloc.rsplit(":", 1)[0]
-            absolute_url = urlunparse((scheme, netloc, url_path or '/', parts.params, query_string, ''))
+            absolute_url = urlunparse((scheme, parts.netloc, url_path or '/', parts.params, query_string, ''))
     elif url.startswith("/"):
         absolute_url = urlunparse((scheme, domain, url_path, parts.params, query_string, ''))
     elif url.startswith("?"):
@@ -276,7 +273,22 @@ class Request:
                                   Don't mistake it with the encoding of the webpage pointed out by the Request.
             referer : The URL from which the current Request was found.
         """
-        self._resource_path = path.split("#")[0]
+        url_parts = urlparse(path)
+        try:
+            # urlparse tries to convert port in base10. an error is raised if port is not digits
+            port = url_parts.port
+        except ValueError:
+            port = None
+
+        if (
+                (url_parts.scheme == "http" and port == 80) or
+                (url_parts.scheme == "https" and port == 443)
+        ):
+            # Remove the port number if it is not necessary
+            url_parts = url_parts._replace(netloc=url_parts.netloc.rsplit(":", 1)[0])
+
+        self._resource_path = urlunparse((url_parts.scheme, url_parts.netloc, url_parts.path, url_parts.params, '', ''))
+        self._fragment = url_parts.fragment or ""
 
         # Most of the members of a Request object are immutable so we compute
         # the data only one time (when asked for) and we keep it in memory for less
@@ -304,7 +316,7 @@ class Request:
             self._method = method
 
         self._enctype = ""
-        if self._method == "POST":
+        if self._method in ["POST", "PUT", "PATCH"]:
             if enctype:
                 self._enctype = enctype.lower().strip()
             else:
@@ -319,7 +331,7 @@ class Request:
             self._post_params = []
         else:
             if isinstance(post_params, list):
-                # Non empty list
+                # Non-empty list
                 self._post_params = deepcopy(post_params)
             elif isinstance(post_params, str):
                 if "urlencoded" in self.enctype or self.is_multipart:
@@ -348,13 +360,10 @@ class Request:
         # eg: get = [['id', '25'], ['color', 'green']]
         if not get_params:
             self._get_params = []
-            if "?" in self._resource_path:
-                query_string = urlparse(self._resource_path).query
-                self._get_params = [[k, v] for k, v in parse_qsl(query_string)]
-                self._resource_path = self._resource_path.split("?")[0]
+            if url_parts.query:
+                self._get_params = [[k, v] for k, v in parse_qsl(url_parts.query)]
         else:
             if isinstance(get_params, list):
-                self._resource_path = self._resource_path.split("?")[0]
                 self._get_params = deepcopy(get_params)
             else:
                 self._get_params = get_params
@@ -362,19 +371,18 @@ class Request:
         self._encoding = encoding
         self._referer = referer
         self._link_depth = link_depth
-        parsed = urlparse(self._resource_path)
-        self._file_path = parsed.path
-        self._hostname = parsed.hostname
-        self._scheme = parsed.scheme or ""
-        self._netloc = parsed.netloc
+        # parsed = urlparse(self._resource_path)
+        self._file_path = url_parts.path
+        self._hostname = url_parts.hostname
+        self._scheme = url_parts.scheme or ""
+        self._netloc = url_parts.netloc
 
         self._port = 80
-        if parsed.port is not None:
-            self._port = parsed.port
-        elif parsed.scheme == "https":
+        if port is not None:
+            self._port = port
+        elif url_parts.scheme == "https":
             self._port = 443
         self._headers = None
-        self._sent_headers = None
         self._response_content = None
         self._start_time = None
         self._size = 0
@@ -402,6 +410,9 @@ class Request:
             return False
 
         if self._resource_path != other.path:
+            return False
+
+        if self._fragment != other.fragment:
             return False
 
         return hash(self) == hash(other)
@@ -483,11 +494,11 @@ class Request:
         rel_url = self.url.split('/', 3)[3]
         http_string = f"{left_margin}{self._method} /{rel_url} HTTP/1.1\n"
 
-        if self._sent_headers:
-            for header_name, header_value in self._sent_headers.items():
+        if self._headers:
+            for header_name, header_value in self._headers.items():
                 http_string += f"{left_margin}{header_name}: {header_value}\n"
 
-        if self._file_params:
+        if self.is_multipart:
             boundary = "------------------------boundarystring"
             http_string += f"{left_margin}Content-Type: multipart/form-data; boundary={boundary}\n\n"
             for field_name, field_value in self._post_params:
@@ -519,7 +530,7 @@ class Request:
         if self._referer:
             curl_string += f" -e \"{shell_escape(self._referer)}\""
 
-        if self._file_params:
+        if self.is_multipart:
             # POST with multipart
             for field_name, field_value in self._post_params:
                 curl_string += f" -F \"{shell_escape(f'{field_name}={field_value}')}\""
@@ -540,17 +551,9 @@ class Request:
     def headers(self) -> httpx.Headers:
         return self._headers
 
-    def set_headers(self, response_headers):
-        """Set the HTTP headers received while requesting the resource"""
-        self._headers = response_headers
-
-    @property
-    def sent_headers(self) -> httpx.Headers:
-        return self._sent_headers
-
-    def set_sent_headers(self, sent_headers: httpx.Headers):
+    def set_headers(self, sent_headers: httpx.Headers):
         """Set the sent HTTP headers while requesting the resource"""
-        self._sent_headers = sent_headers
+        self._headers = sent_headers
 
     @property
     def response_content(self) -> str:
@@ -575,14 +578,6 @@ class Request:
         self._size = value
 
     @property
-    def status(self) -> int:
-        return self._status
-
-    @status.setter
-    def status(self, value: int):
-        self._status = value
-
-    @property
     def url(self) -> str:
         if not self._cached_url:
             if self._get_params:
@@ -590,6 +585,16 @@ class Request:
             else:
                 self._cached_url = self._resource_path
         return self._cached_url
+
+    @property
+    def fragment(self) -> str:
+        return self._fragment
+
+    @property
+    def url_with_fragment(self) -> str:
+        if self._fragment:
+            return f"{self.url}#{self._fragment}"
+        return self.url
 
     @property
     def hostname(self) -> str:
@@ -664,6 +669,10 @@ class Request:
     @property
     def is_multipart(self) -> bool:
         return "multipart" in self._enctype
+
+    @property
+    def is_json(self) -> bool:
+        return self._enctype == "application/json"
 
     @property
     def referer(self) -> str:

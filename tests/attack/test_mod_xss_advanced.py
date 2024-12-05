@@ -1,17 +1,16 @@
+import re
 from subprocess import Popen
 import os
 import sys
 from time import sleep
-from asyncio import Event
+from unittest.mock import AsyncMock
 
 import pytest
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
 from wapitiCore.attack.mod_xss import ModuleXss
-from wapitiCore.language.vulnerability import _
-from tests import AsyncMock
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +26,7 @@ def run_around_tests():
 
 @pytest.mark.asyncio
 async def test_title_false_positive():
-    # We should fail at escaping the title tag and we should be aware of it
+    # We should fail at escaping the title tag, and we should be aware of it
     persister = AsyncMock()
     request = Request("http://127.0.0.1:65081/title_false_positive.php?title=yolo&fixed=yes")
     request.path_id = 42
@@ -35,7 +34,7 @@ async def test_title_false_positive():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -52,18 +51,16 @@ async def test_title_positive():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
         assert persister.add_payload.call_count
         assert persister.add_payload.call_args_list[0][1]["module"] == "xss"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("Reflected Cross Site Scripting")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "Reflected Cross Site Scripting"
         assert persister.add_payload.call_args_list[0][1]["parameter"] == "title"
         assert persister.add_payload.call_args_list[0][1]["request"].get_params[0][1].startswith("</title>")
-        assert _(
-            "Warning: Content-Security-Policy is present!"
-        ) not in persister.add_payload.call_args_list[0][1]["info"]
+        assert "Warning: Content-Security-Policy is present!" not in persister.add_payload.call_args_list[0][1]["info"]
 
 
 @pytest.mark.asyncio
@@ -76,7 +73,7 @@ async def test_script_filter_bypass():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -95,7 +92,7 @@ async def test_script_src_protocol_relative():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -116,7 +113,7 @@ async def test_attr_quote_escape():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -135,7 +132,7 @@ async def test_attr_double_quote_escape():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -154,7 +151,7 @@ async def test_attr_escape():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -173,7 +170,7 @@ async def test_tag_name_escape():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -192,7 +189,7 @@ async def test_partial_tag_name_escape():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -210,7 +207,7 @@ async def test_xss_inside_tag_input():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -229,7 +226,7 @@ async def test_xss_inside_tag_link():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -237,6 +234,44 @@ async def test_xss_inside_tag_link():
         assert persister.add_payload.call_args_list[0][1]["parameter"] == "url"
         used_payload = persister.add_payload.call_args_list[0][1]["request"].get_params[0][1].lower()
         assert "<" not in used_payload and ">" not in used_payload and "autofocus href onfocus" in used_payload
+
+
+@pytest.mark.asyncio
+async def test_xss_inside_href_link():
+    persister = AsyncMock()
+    request = Request("http://127.0.0.1:65081/link_href_htmlentities.php?url=http://perdu.com/")
+    request.path_id = 42
+    crawler_configuration = CrawlerConfiguration(Request("http://127.0.0.1:65081/"))
+    async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
+        options = {"timeout": 10, "level": 2}
+
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
+        module.do_post = False
+        await module.attack(request)
+
+        assert persister.add_payload.call_count
+        assert persister.add_payload.call_args_list[0][1]["parameter"] == "url"
+        used_payload = persister.add_payload.call_args_list[0][1]["request"].get_params[0][1].lower()
+        assert "<" not in used_payload and ">" not in used_payload and "javascript:alert" in used_payload
+
+
+@pytest.mark.asyncio
+async def test_xss_inside_src_iframe():
+    persister = AsyncMock()
+    request = Request("http://127.0.0.1:65081/iframe_src_htmlentities.php?url=http://perdu.com/")
+    request.path_id = 42
+    crawler_configuration = CrawlerConfiguration(Request("http://127.0.0.1:65081/"))
+    async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
+        options = {"timeout": 10, "level": 2}
+
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
+        module.do_post = False
+        await module.attack(request)
+
+        assert persister.add_payload.call_count
+        assert persister.add_payload.call_args_list[0][1]["parameter"] == "url"
+        used_payload = persister.add_payload.call_args_list[0][1]["request"].get_params[0][1].lower()
+        assert "<" not in used_payload and ">" not in used_payload and "javascript:alert" in used_payload
 
 
 @pytest.mark.asyncio
@@ -248,7 +283,7 @@ async def test_xss_uppercase_no_script():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -267,7 +302,7 @@ async def test_frame_src_escape():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -286,7 +321,7 @@ async def test_frame_src_no_escape():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -305,7 +340,7 @@ async def test_bad_separator_used():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -323,7 +358,7 @@ async def test_escape_with_style():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -341,7 +376,7 @@ async def test_rare_tag_and_event():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -359,12 +394,12 @@ async def test_xss_with_strong_csp():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
         assert persister.add_payload.call_count
-        assert _("Warning: Content-Security-Policy is present!") in persister.add_payload.call_args_list[0][1]["info"]
+        assert "Warning: Content-Security-Policy is present!" in persister.add_payload.call_args_list[0][1]["info"]
 
 
 @pytest.mark.asyncio
@@ -376,11 +411,33 @@ async def test_xss_with_weak_csp():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
         assert persister.add_payload.call_count
-        assert _(
-            "Warning: Content-Security-Policy is present!"
-        ) not in persister.add_payload.call_args_list[0][1]["info"]
+        assert "Warning: Content-Security-Policy is present!" not in persister.add_payload.call_args_list[0][1]["info"]
+
+
+@pytest.mark.asyncio
+async def test_fallback_to_html_injection():
+    persister = AsyncMock()
+    request = Request("http://127.0.0.1:65081/no_js_possible.php?name=test")
+    request.path_id = 42
+    crawler_configuration = CrawlerConfiguration(Request("http://127.0.0.1:65081/"))
+    async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
+        options = {"timeout": 10, "level": 2}
+
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
+        module.do_post = False
+        await module.attack(request)
+
+        assert persister.add_payload.call_count
+        assert persister.add_payload.call_args_list[0][1]["parameter"] == "name"
+        assert persister.add_payload.call_args_list[0][1]["category"] == "HTML Injection"
+        assert persister.add_payload.call_args_list[0][1]["info"] == (
+            "HTML Injection vulnerability found via injection in the parameter name"
+        )
+        used_payload = persister.add_payload.call_args_list[0][1]["request"].get_params[0][1].lower()
+        assert re.match(r'<div id="\w+">yolo</div>', used_payload)
+

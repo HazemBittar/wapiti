@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2019-2022 Nicolas Surribas
+# Copyright (C) 2019-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,14 +17,18 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+from typing import Optional
+from urllib.parse import urlparse
+
 from httpx import RequestError
 
 from wapitiCore.main.log import log_red, log_verbose
-from wapitiCore.attack.attack import Attack, Flags
-from wapitiCore.language.vulnerability import Messages, _
-from wapitiCore.definitions.redirect import NAME, WSTG_CODE
-from wapitiCore.net.web import Request
-from wapitiCore.net.html import Html
+from wapitiCore.attack.attack import Attack
+from wapitiCore.language.vulnerability import Messages
+from wapitiCore.definitions.redirect import RedirectFinding
+from wapitiCore.model import str_to_payloadinfo
+from wapitiCore.net import Request, Response
+from wapitiCore.parsers.html_parser import Html
 
 
 class ModuleRedirect(Attack):
@@ -31,19 +36,21 @@ class ModuleRedirect(Attack):
     # Won't work with PHP >= 4.4.2
 
     name = "redirect"
-    MSG_VULN = _("Open Redirect")
+    MSG_VULN = "Open Redirect"
     do_get = True
     do_post = False
-    payloads = ("https://openbugbounty.org/", Flags())
 
-    def __init__(self, crawler, persister, attack_options, stop_event):
-        super().__init__(crawler, persister, attack_options, stop_event)
+    def __init__(self, crawler, persister, attack_options, crawler_configuration):
+        super().__init__(crawler, persister, attack_options, crawler_configuration)
         self.mutator = self.get_mutator()
 
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         page = request.path
 
-        for mutated_request, parameter, __, __ in self.mutator.mutate(request):
+        for mutated_request, parameter, __ in self.mutator.mutate(
+                request,
+                str_to_payloadinfo(["https://openbugbounty.org/", "//openbugbounty.org/"]),
+        ):
             log_verbose(f"[¨] {mutated_request.url}")
 
             try:
@@ -54,18 +61,17 @@ class ModuleRedirect(Attack):
 
             html = Html(response.content, mutated_request.url)
             all_redirections = {response.redirection_url} | html.all_redirections
-            if any(url.startswith("https://openbugbounty.org/") for url in all_redirections):
-                await self.add_vuln_low(
+            if any(urlparse(url).netloc.endswith("openbugbounty.org") for url in all_redirections):
+                await self.add_low(
                     request_id=request.path_id,
-                    category=NAME,
+                    finding_class=RedirectFinding,
                     request=mutated_request,
-                    parameter=parameter,
-                    info=_("{0} via injection in the parameter {1}").format(self.MSG_VULN, parameter),
-                    wstg=WSTG_CODE,
+                    parameter=parameter.display_name,
+                    info=f"{self.MSG_VULN} via injection in the parameter {parameter.display_name}",
                     response=response
                 )
 
-                if parameter == "QUERY_STRING":
+                if not parameter.is_qs_injection:
                     injection_msg = Messages.MSG_QS_INJECT
                 else:
                     injection_msg = Messages.MSG_PARAM_INJECT
@@ -75,7 +81,7 @@ class ModuleRedirect(Attack):
                     injection_msg,
                     self.MSG_VULN,
                     page,
-                    parameter
+                    parameter.display_name
                 )
                 log_red(Messages.MSG_EVIL_REQUEST)
                 log_red(mutated_request.http_repr())

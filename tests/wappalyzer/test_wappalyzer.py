@@ -1,9 +1,11 @@
 from typing import Dict
 from unittest import mock
 from unittest.mock import MagicMock, mock_open
+
 import respx
 import httpx
 import pytest
+
 from wapitiCore.wappalyzer.wappalyzer import ApplicationData, Wappalyzer
 from wapitiCore.net.response import Response
 
@@ -18,6 +20,9 @@ async def test_applicationdata():
     groups_text = """{
         "9": {
             "name": "Web development"
+        },
+        "7": {
+            "name": "Servers"
         }
     }"""
 
@@ -35,6 +40,13 @@ async def test_applicationdata():
             ],
             "name": "JavaScript graphics",
             "priority": 6
+        },
+        "31": {
+            "groups": [
+            7
+        ],
+        "name": "CDN",
+        "priority": 9
         }
     }"""
 
@@ -48,10 +60,27 @@ async def test_applicationdata():
             },
             "cpe": "cpe:/a:php:php",
             "description": "PHP is a general-purpose scripting language used for web development.",
-            \"headers\": {\"Server\": \"php\/?([\\\\d.]+)?\\\\;version:\\\\1\",\"X-Powered-By\": \"^php\/?([\\\\d.]+)?\\\\;version:\\\\1\"},
+            \"headers\": {\"Server\": \"php/?([\\\\d.]+)?\\\\;version:\\\\1\",\"X-Powered-By\": \"^php/?([\\\\d.]+)?\\\\;version:\\\\1\"},
             "icon": "PHP.svg",
             "url": \"\\\\.php(?:$|\\\\?)\",
             "website": "http://php.net"
+        },
+        "Akamai": {
+            "cats": [
+                31
+            ],
+            "description": "Akamai is global content delivery network (CDN) services provider for media and software delivery, and cloud security solutions.",
+            "headers": {
+                "X-Akamai-Transformed": "",
+                "X-EdgeConnect-MidMile-RTT": "",
+                "X-EdgeConnect-Origin-MEX-Latency": ""
+            },
+            "icon": "Akamai.svg",
+            "pricing": [
+                "poa"
+            ],
+            "saas": true,
+            "website": "http://akamai.com"
         },
          "A-Frame": {
             "cats": [
@@ -63,7 +92,7 @@ async def test_applicationdata():
             "js": {
                 \"AFRAME.version\": \"^(.+)$\\\\;version:\\\\1\"
             },
-            \"scripts\": \"\/?([\\\\d.]+)?\/aframe(?:\\\\.min)?\\\\.js\\\\;version:\\\\1\",
+            \"scripts\": \"/?([\\\\d.]+)?/aframe(?:\\\\.min)?\\\\.js\\\\;version:\\\\1\",
             "website": "https://aframe.io"
         }
     }"""
@@ -74,6 +103,7 @@ async def test_applicationdata():
                 if filename == expected_filename:
                     return mock_open(read_data=content).return_value
             raise FileNotFoundError('(mock) Unable to open {filename}')
+
         return MagicMock(side_effect=open_mock)
 
     files = {
@@ -82,15 +112,13 @@ async def test_applicationdata():
         f'{technologies_file_path}': technologies_text,
     }
 
-    application_data = None
-
     with mock.patch("builtins.open", get_mock_open(files)):
         application_data = ApplicationData(categories_file_path, groups_file_path, technologies_file_path)
 
     assert application_data is not None
-    assert len(application_data.get_applications()) == 2
-    assert len(application_data.get_categories()) == 2
-    assert len(application_data.get_groups()) == 1
+    assert len(application_data.get_applications()) == 3
+    assert len(application_data.get_categories()) == 3
+    assert len(application_data.get_groups()) == 2
 
     target_url = "http://perdu.com/"
 
@@ -103,7 +131,8 @@ async def test_applicationdata():
             headers=[
                 ('server', 'nginx/1.19.0'),
                 ('content-type', 'text/html; charset=UTF-8'),
-                ('x-powered-by', 'PHP/5.6.40-38+ubuntu20.04.1+deb.sury.org+1')
+                ('x-powered-by', 'PHP/5.6.40-38+ubuntu20.04.1+deb.sury.org+1'),
+                ('x-akamai-transformed', 'another text value')
             ]
         )
     )
@@ -111,14 +140,22 @@ async def test_applicationdata():
     resp = httpx.get(target_url, follow_redirects=False)
     page = Response(resp)
 
-    wappalyzer = Wappalyzer(application_data, page)
+    wappalyzer = Wappalyzer(application_data, page, {})
+    result = wappalyzer.detect()
 
-    result = wappalyzer.detect_with_versions_and_categories_and_groups()
-
-    assert len(result) == 1
+    # Value based detection result
+    assert len(result) == 2
     assert result.get("PHP") is not None
     assert len(result.get("PHP").get("categories")) == 1
     assert result.get("PHP").get("categories")[0] == "Programming languages"
     assert len(result.get("PHP").get("groups")) == 1
     assert result.get("PHP").get("groups")[0] == "Web development"
+
+    # Key based detection result
+    assert result.get("Akamai") is not None
+    assert len(result.get("Akamai").get("categories")) == 1
+    assert result.get("Akamai").get("categories")[0] == "CDN"
+    assert len(result.get("Akamai").get("groups")) == 1
+    assert result.get("Akamai").get("groups")[0] == "Servers"
+
     assert result.get("A-Frame") is None

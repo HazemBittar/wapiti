@@ -3,7 +3,8 @@
 # JSON Report Generator Module for Wapiti Project
 # Wapiti Project (https://wapiti-scanner.github.io)
 #
-# Copyright (C) 2014-2022 Nicolas SURRIBAS
+# Copyright (C) 2014-2023 Nicolas SURRIBAS
+# Copyright (C) 2020-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -26,6 +27,13 @@ from wapitiCore.net.response import detail_response
 from wapitiCore.report.reportgenerator import ReportGenerator
 
 
+class BytesDump(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, bytes):
+            return o.decode("utf-8", errors="replace")
+        return json.JSONEncoder.default(self, o)
+
+
 class JSONReportGenerator(ReportGenerator):
     """This class allow generating reports in JSON format.
     The root dictionary contains 5 dictionaries :
@@ -33,7 +41,7 @@ class JSONReportGenerator(ReportGenerator):
     - vulnerabilities : each key is matching a vulnerability class. Value is a list of found vulnerabilities.
     - anomalies : same as vulnerabilities but used only for error messages and timeouts (items of less importance).
     - additionals : some additional information about the target.
-    - infos : several information about the scan.
+    - infos : information about the scan.
     """
 
     def __init__(self):
@@ -58,7 +66,7 @@ class JSONReportGenerator(ReportGenerator):
             "infos": self._infos
         }
         with open(output_path, "w", encoding="utf-8") as json_report_file:
-            json.dump(report_dict, json_report_file, indent=2)
+            json.dump(report_dict, json_report_file, indent=2, cls=BytesDump)
 
     # Vulnerabilities
     def add_vulnerability_type(self, name, description="", solution="", references=None, wstg=None):
@@ -100,7 +108,7 @@ class JSONReportGenerator(ReportGenerator):
             "curl_command": request.curl_repr,
             "wstg": wstg,
         }
-        if self._infos["detailed_report"]:
+        if self._infos["detailed_report_level"] == 2:
             vuln_dict["detail"] = {
                 "response": detail_response(response)
             }
@@ -145,7 +153,7 @@ class JSONReportGenerator(ReportGenerator):
             "curl_command": request.curl_repr,
             "wstg": wstg
         }
-        if self._infos["detailed_report"]:
+        if self._infos["detailed_report_level"] == 2:
             anom_dict["detail"] = {
                 "response": detail_response(response)
             }
@@ -189,10 +197,12 @@ class JSONReportGenerator(ReportGenerator):
             "curl_command": request.curl_repr,
             "wstg": wstg
         }
-        if self._infos["detailed_report"]:
+
+        if self._infos["detailed_report_level"] == 2:
             addition_dict["detail"] = {
                 "response": detail_response(response)
             }
+
         if category not in self._additionals:
             self._additionals[category] = []
         self._additionals[category].append(addition_dict)

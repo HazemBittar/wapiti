@@ -1,15 +1,14 @@
-import asyncio
 import re
+from unittest.mock import AsyncMock
 
 import httpx
 import respx
 import pytest
 
-from wapitiCore.net.web import Request
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
+from wapitiCore.net.classes import CrawlerConfiguration
 from wapitiCore.attack.mod_cookieflags import ModuleCookieflags
-from tests import AsyncMock
 
 
 @pytest.mark.asyncio
@@ -35,7 +34,7 @@ async def test_cookieflags():
         await crawler.async_send(request)  # Put cookies in our crawler object
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleCookieflags(crawler, persister, options, asyncio.Event())
+        module = ModuleCookieflags(crawler, persister, options, crawler_configuration)
         await module.attack(request)
 
         cookie_flags = []

@@ -1,15 +1,13 @@
-from asyncio import Event
-from unittest import mock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 import respx
-from tests import AsyncMock
+
 from wapitiCore.attack.mod_wp_enum import ModuleWpEnum
-from wapitiCore.language.vulnerability import _
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 
 
 @pytest.mark.asyncio
@@ -34,7 +32,7 @@ async def test_no_wordpress():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleWpEnum(crawler, persister, options, Event())
+        module = ModuleWpEnum(crawler, persister, options, crawler_configuration)
 
         await module.attack(request)
 
@@ -104,20 +102,20 @@ async def test_plugin():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleWpEnum(crawler, persister, options, Event())
+        module = ModuleWpEnum(crawler, persister, options, crawler_configuration)
 
         await module.attack(request)
 
         assert persister.add_payload.call_count
 
         assert persister.add_payload.call_args_list[0][1]["module"] == "wp_enum"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("Fingerprint web technology")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "Fingerprint web technology"
         assert persister.add_payload.call_args_list[0][1]["info"] == (
             '{"name": "WordPress", "versions": [], "categories": ["CMS", "Blogs"], "groups": ["Content"]}'
         )
 
         assert persister.add_payload.call_args_list[1][1]["module"] == "wp_enum"
-        assert persister.add_payload.call_args_list[1][1]["category"] == _("Fingerprint web technology")
+        assert persister.add_payload.call_args_list[1][1]["category"] == "Fingerprint web technology"
         assert persister.add_payload.call_args_list[1][1]["info"] == (
             '{"name": "bbpress", "versions": ["2.6.6"], "categories": ["WordPress plugins"], "groups": ["Add-ons"]}'
         )
@@ -191,7 +189,7 @@ async def test_theme():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleWpEnum(crawler, persister, options, Event())
+        module = ModuleWpEnum(crawler, persister, options, crawler_configuration)
 
         await module.attack(request)
 
@@ -220,7 +218,34 @@ async def test_wp_version():
         )
     )
 
+    # test with no content-type, should be skipped
     respx.get("http://perdu.com/feed/").mock(
+        return_value=httpx.Response(
+            200,
+            text='<?xml version="1.0" encoding="UTF-8"?>\
+                <rss version="2.0">\
+                    <channel>\
+                        <generator>https://wordpress.org/?v=4.3.2</generator>\
+                    </channel>\
+                </rss>'
+        )
+    )
+
+    # test with content-type different from XML, should be skipped
+    respx.get("http://perdu.com/comments/feed/").mock(
+        return_value=httpx.Response(
+            200,
+            text='<?xml version="1.0" encoding="UTF-8"?>\
+                <rss version="2.0">\
+                    <channel>\
+                        <generator>https://wordpress.org/?v=5.4.3</generator>\
+                    </channel>\
+                </rss>',
+            headers={"content-type":"text/html, charset=UTF-8"}
+        )
+    )
+
+    respx.get("http://perdu.com/feed/rss/").mock(
         return_value=httpx.Response(
             200,
             text='<?xml version="1.0" encoding="UTF-8"?>\
@@ -228,9 +253,13 @@ async def test_wp_version():
                     <channel>\
                         <generator>https://wordpress.org/?v=5.8.2</generator>\
                     </channel>\
-                </rss>'
+                </rss>',
+            headers={"content-type":"application/rss+xml, charset=UTF-8"}
         )
     )
+
+    respx.get(url__regex=r"http://perdu.com/wp-content/plugins/.*?/readme.txt").mock(return_value=httpx.Response(404))
+    respx.get(url__regex=r"http://perdu.com/wp-content/themes/.*?/readme.txt").mock(return_value=httpx.Response(404))
 
     persister = AsyncMock()
 
@@ -241,9 +270,9 @@ async def test_wp_version():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        with mock.patch.object(ModuleWpEnum, "detect_plugin", AsyncMock()) as mock_detect_plugin, \
-            mock.patch.object(ModuleWpEnum, "detect_theme", AsyncMock()) as mock_detect_theme:
-            module = ModuleWpEnum(crawler, persister, options, Event())
+        with patch.object(ModuleWpEnum, "detect_plugin", AsyncMock()) as mock_detect_plugin, \
+                patch.object(ModuleWpEnum, "detect_theme", AsyncMock()) as mock_detect_theme:
+            module = ModuleWpEnum(crawler, persister, options, crawler_configuration)
 
             await module.attack(request)
 
@@ -282,9 +311,9 @@ async def test_wp_version_no_file():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        with mock.patch.object(ModuleWpEnum, "detect_plugin", AsyncMock()) as mock_detect_plugin, \
-            mock.patch.object(ModuleWpEnum, "detect_theme", AsyncMock()) as mock_detect_theme:
-            module = ModuleWpEnum(crawler, persister, options, Event())
+        with patch.object(ModuleWpEnum, "detect_plugin", AsyncMock()) as mock_detect_plugin, \
+                patch.object(ModuleWpEnum, "detect_theme", AsyncMock()) as mock_detect_theme:
+            module = ModuleWpEnum(crawler, persister, options, crawler_configuration)
 
             await module.attack(request)
 

@@ -1,25 +1,23 @@
 import asyncio
+import json
 import os
-from asyncio import Event
-from unittest import mock
-from unittest.mock import MagicMock, PropertyMock
+from unittest.mock import patch, PropertyMock, AsyncMock
 
 import httpx
 import pytest
 import respx
-from tests import AsyncMock
-from wapitiCore.attack.mod_htp import ModuleHtp
-from wapitiCore.language.language import _
+
+from wapitiCore.attack.mod_htp import ModuleHtp, get_matching_versions
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_must_attack():
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -29,7 +27,7 @@ async def test_must_attack():
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
-        module_htp = ModuleHtp(crawler, persister, options, Event())
+        module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
 
         assert await module_htp.must_attack(Request("http://perdu.com", method="POST")) is False
         assert await module_htp.must_attack(Request("http://perdu.com", method="GET")) is True
@@ -46,7 +44,7 @@ async def test_analyze_file_detection():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -54,19 +52,18 @@ async def test_analyze_file_detection():
     request.path_id = 1
 
     techno = "techno"
-    techno_versions = '"{\\"versions\\": [\\"1.2\\", \\"1.2.1\\"]}"'  # '{"versions": ["1.2", "1.2.1"]}'
+    techno_versions = {"versions": ["1.2", "1.2.1"]}
 
-    with mock.patch.object(ModuleHtp, "_find_technology", return_value=(techno, techno_versions)):
+    with patch.object(ModuleHtp, "_find_technology", return_value=(techno, json.dumps(techno_versions))):
         crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
             options = {"timeout": 10, "level": 2}
-            module_htp = ModuleHtp(crawler, persister, options, Event())
+            module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
 
-            await module_htp._analyze_file(Request("http://perdu.com/"))
+            found_technology = await module_htp._analyze_file(Request("http://perdu.com/"))
 
-            assert len(module_htp.tech_versions) == 1
-            assert module_htp.tech_versions.get(techno) is not None
-            assert module_htp.tech_versions.get(techno) == [["1.2", "1.2.1"]]
+            assert found_technology
+            assert techno_versions == json.loads(found_technology[1])
 
 
 @pytest.mark.asyncio
@@ -80,22 +77,21 @@ async def test_analyze_file_no_detection():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
     request = Request("http://perdu.com/")
     request.path_id = 1
 
-    with mock.patch.object(ModuleHtp, "_find_technology", return_value=None):
+    with patch.object(ModuleHtp, "_find_technology", return_value=None):
         crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
             options = {"timeout": 10, "level": 2}
-            module_htp = ModuleHtp(crawler, persister, options, Event())
+            module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
 
-            await module_htp._analyze_file(Request("http://perdu.com"))
+            assert await module_htp._analyze_file(Request("http://perdu.com")) is None
 
-            assert len(module_htp.tech_versions) == 0
 
 @pytest.mark.asyncio
 @respx.mock
@@ -105,7 +101,7 @@ async def test_analyze_file_none_content():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -115,11 +111,9 @@ async def test_analyze_file_none_content():
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
-        module_htp = ModuleHtp(crawler, persister, options, Event())
+        module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
 
-        await module_htp._analyze_file(Request("http://perdu.com"))
-
-        assert len(module_htp.tech_versions) == 0
+        assert await module_htp._analyze_file(Request("http://perdu.com")) is None
 
 
 @pytest.mark.asyncio
@@ -130,7 +124,7 @@ async def test_analyze_file_request_error():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -140,11 +134,11 @@ async def test_analyze_file_request_error():
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
-        module_htp = ModuleHtp(crawler, persister, options, Event())
+        module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
 
-        await module_htp._analyze_file(Request("http://perdu.com"))
+        found_technology = await module_htp._analyze_file(Request("http://perdu.com"))
 
-        assert len(module_htp.tech_versions) == 0
+        assert found_technology is None
         assert module_htp.network_errors == 1
 
 
@@ -159,24 +153,24 @@ async def test_finish_no_technologies():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
     request = Request("http://perdu.com/")
     request.path_id = 1
 
-    with mock.patch("wapitiCore.attack.mod_htp.ModuleHtp.add_vuln_info", autospec=True) as mock_add_vuln_info, \
-        mock.patch.object(ModuleHtp, "_db", new_callable=PropertyMock) as mock_db:
+    with patch("wapitiCore.attack.mod_htp.ModuleHtp.add_info", autospec=True) as mock_add_info, \
+            patch.object(ModuleHtp, "_db", new_callable=PropertyMock) as mock_db:
         crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
             options = {"timeout": 10, "level": 2}
-            module_htp = ModuleHtp(crawler, persister, options, Event())
+            module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
 
             await module_htp.finish()
 
             mock_db.assert_called()
-            mock_add_vuln_info.assert_not_called()
+            mock_add_info.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -190,7 +184,7 @@ async def test_finish_one_range():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
     persister.get_root_url.return_value = "http://perdu.com/"
@@ -199,32 +193,30 @@ async def test_finish_one_range():
     request.path_id = 1
 
     techno = "techno"
-    techno_versions = '["1.2", "1.2.1", "1.3"]'
 
     versions = ["1.0", "1.1", "1.2", "1.2.1", "1.3", "1.4"]
 
-    async def async_magic():
-        pass
-    MagicMock.__await__ = lambda x: async_magic().__await__()
-    with mock.patch("wapitiCore.attack.mod_htp.ModuleHtp.add_vuln_info", autospec=True) as mock_add_vuln_info, \
-        mock.patch.object(ModuleHtp, "_db", new_callable=PropertyMock) as mock_db, \
-        mock.patch.object(ModuleHtp, "_get_versions", return_value=versions):
+    with patch.object(ModuleHtp, "_db", new_callable=PropertyMock), \
+            patch.object(ModuleHtp, "_get_versions", return_value=versions):
         crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
             options = {"timeout": 10, "level": 2}
-            module_htp = ModuleHtp(crawler, persister, options, Event())
+            module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
             module_htp._root_url = "http://perdu.com/"
 
             module_htp.tech_versions[techno] = [["1.2", "1.2.1", "1.3"]]
 
             await module_htp.finish()
 
-            mock_add_vuln_info.assert_called_once_with(
-                module_htp,
-                category=_("Fingerprint web server"),
-                request=Request("http://perdu.com/"),
-                info='{"name": "techno", "versions": ["1.2", "1.2.1", "1.3"]}'
+            assert persister.add_payload.call_count
+            assert persister.add_payload.call_args_list[0][1]["module"] == "htp"
+            assert persister.add_payload.call_args_list[0][1]["payload_type"] == "vulnerability"
+            assert persister.add_payload.call_args_list[0][1]["category"] == "Fingerprint web server"
+            assert persister.add_payload.call_args_list[0][1]["level"] == 0
+            assert persister.add_payload.call_args_list[0][1]["info"] == (
+                '{"name": "techno", "versions": ["1.2", "1.2.1", "1.3"]}'
             )
+            assert persister.add_payload.call_args_list[0][1]["wstg"] == ['WSTG-INFO-02']
 
 
 @pytest.mark.asyncio
@@ -238,7 +230,7 @@ async def test_finish_two_ranges():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
     persister.get_root_url.return_value = "http://perdu.com/"
@@ -250,28 +242,28 @@ async def test_finish_two_ranges():
 
     versions = ["1.0", "1.1", "1.2", "1.2.1", "1.3", "1.4", "1.5", "1.6"]
 
-    async def async_magic():
-        pass
-    MagicMock.__await__ = lambda x: async_magic().__await__()
-    with mock.patch("wapitiCore.attack.mod_htp.ModuleHtp.add_vuln_info", autospec=True) as mock_add_vuln_info, \
-        mock.patch.object(ModuleHtp, "_db", new_callable=PropertyMock) as mock_db, \
-        mock.patch.object(ModuleHtp, "_get_versions", return_value=versions):
+    with patch.object(ModuleHtp, "_db", new_callable=PropertyMock), \
+            patch.object(ModuleHtp, "_get_versions", return_value=versions):
         crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
             options = {"timeout": 10, "level": 2}
-            module_htp = ModuleHtp(crawler, persister, options, Event())
+            module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
             module_htp._root_url = "http://perdu.com/"
 
             module_htp.tech_versions[techno] = [["1.2", "1.2.1", "1.3"], ["1.3", "1.4"], ["1.5", "1.5"], ["1.0", "1.2"]]
 
             await module_htp.finish()
 
-            mock_add_vuln_info.assert_called_once_with(
-                module_htp,
-                category=_("Fingerprint web server"),
-                request=Request("http://perdu.com/"),
-                info='{"name": "techno", "versions": ["1.0", "1.1", "1.2", "1.2.1", "1.3", "1.4", "1.5"]}'
+            assert persister.add_payload.call_count
+            assert persister.add_payload.call_args_list[0][1]["module"] == "htp"
+            assert persister.add_payload.call_args_list[0][1]["payload_type"] == "vulnerability"
+            assert persister.add_payload.call_args_list[0][1]["category"] == "Fingerprint web server"
+            assert persister.add_payload.call_args_list[0][1]["level"] == 0
+            assert persister.add_payload.call_args_list[0][1]["info"] == (
+                '{"name": "techno", "versions": ["1.0", "1.1", "1.2", "1.2.1", "1.3", "1.4", "1.5"]}'
             )
+            assert persister.add_payload.call_args_list[0][1]["wstg"] == ['WSTG-INFO-02']
+            assert persister.add_payload.call_args_list[0][1]["request"] ==Request("http://perdu.com/")
 
 
 @pytest.mark.asyncio
@@ -287,7 +279,7 @@ async def test_root_attack_root_url():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
     persister.get_root_url.return_value = "http://perdu.com/"
@@ -300,21 +292,22 @@ async def test_root_attack_root_url():
         "index.html"
     ]
 
-    with mock.patch.object(
-        ModuleHtp, "_get_static_files", return_value=static_files, autospec=True
+    with patch.object(
+            ModuleHtp, "_get_static_files", return_value=static_files, autospec=True
     ) as mock_get_static_files, \
-    mock.patch.object(
-        ModuleHtp, "_analyze_file", autospec=True
-    ) as mock_analyze_file, \
-    mock.patch.object(
-        ModuleHtp, "_init_db", autospec=True
-    ) as mock_init_db:
+            patch.object(
+                ModuleHtp, "_analyze_file", autospec=True
+            ) as mock_analyze_file, \
+            patch.object(
+                ModuleHtp, "_init_db", autospec=True
+            ) as mock_init_db:
         crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
-            options = {"timeout": 10, "level": 2}
-            module_htp = ModuleHtp(crawler, persister, options, Event())
+            options = {"timeout": 10, "level": 2, "tasks": 20}
+            module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
             module_htp._root_url = target_url
             target_request = Request(target_url)
+            mock_analyze_file.return_value = None
 
             await module_htp.attack(target_request)
 
@@ -336,7 +329,7 @@ async def test_attack():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
     persister.get_root_url.return_value = "http://perdu.com/"
@@ -352,21 +345,64 @@ async def test_attack():
     future_init_db = asyncio.Future()
     future_init_db.set_result(None)
 
-    with mock.patch.object(
-        ModuleHtp, "_get_static_files", return_value=static_files, autospec=True
+    with patch.object(
+            ModuleHtp, "_get_static_files", return_value=static_files, autospec=True
     ) as mock_get_static_files, \
-    mock.patch.object(
-        ModuleHtp, "_analyze_file", autospec=True
-    ) as mock_analyze_file, \
-    mock.patch.object(ModuleHtp, "_init_db", return_value=future_init_db):
+            patch.object(
+                ModuleHtp, "_analyze_file", autospec=True
+            ) as mock_analyze_file, \
+            patch.object(ModuleHtp, "_init_db", return_value=future_init_db):
         crawler_configuration = CrawlerConfiguration(Request(target_url))
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
-            options = {"timeout": 10, "level": 2}
-            module_htp = ModuleHtp(crawler, persister, options, Event())
+            options = {"timeout": 10, "level": 2, "tasks": 20}
+            module_htp = ModuleHtp(crawler, persister, options, crawler_configuration)
             module_htp._root_url = target_url
             target_request = Request(target_url + "index.html")
+            options = {"timeout": 10, "level": 2, "tasks": 20}
+            mock_analyze_file.return_value = None
 
             await module_htp.attack(target_request)
 
             mock_get_static_files.assert_not_called()
             assert mock_analyze_file.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "known_versions, detected_versions, matching_versions",
+    [
+        [
+            ["1.0", "1.1", "1.2", "1.3", "1.3.1"],
+            [["1.1", "1.3"], ["1.2", "1.3.1"]],
+            ["1.1", "1.2", "1.3", "1.3.1"],
+        ],
+        [
+            ["1.0", "1.1", "1.2", "1.2.1", "1.3", "1.4", "1.5", "1.6"],
+            [["1.2", "1.2.1", "1.3"], ["1.3", "1.4"], ["1.5", "1.5"], ["1.0", "1.2"]],
+            ["1.0", "1.1", "1.2", "1.2.1", "1.3", "1.4", "1.5"],
+        ],
+        [
+            ["1.0", "1.1", "1.2", "1.2.1", "1.3", "1.3.1"],
+            [["0.7", "1.3"], ["1.2", "1.4"]],
+            ["1.2", "1.2.1", "1.3"],
+        ],
+        [
+            ["0.8", "1.1", "1.2", "1.2.1", "1.3", "1.3.1"],
+            [["0.7", "1.3"], ["1.3.2", "1.4"]],
+            ["1.3"],
+        ],
+        [
+            ["1.0", "1.1", "1.2", "1.2.1", "1.3", "1.3.1"],
+            [["0.7", "0.8"], ["1.3.2", "1.4"]],
+            [],
+        ],
+    ],
+    ids=[
+        "regular test #1",
+        "regular test #2",
+        "missing start end end of range",
+        "only one matching version",
+        "no matching version",
+    ]
+)
+def test_get_matching_technology_versions(known_versions, detected_versions, matching_versions):
+    assert matching_versions == get_matching_versions(known_versions, detected_versions)

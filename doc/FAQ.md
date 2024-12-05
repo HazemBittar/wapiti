@@ -3,7 +3,7 @@
 ### What is Wapiti ? ###
 
 Wapiti is a web-application / website vulnerability scanner written in Python3.  
-It allow to automate the processing of finding web-based vulnerabilities.  
+It allows to automate the processing of finding web-based vulnerabilities.  
 This is not an exploitation framework like Metasploit, it only does detection.
 
 ### How do I install Wapiti on my computer ? ###
@@ -25,14 +25,19 @@ Sure as long as you respect the GPLv2 license.
 
 ### How do I execute Wapiti ? ###
 
-Wapiti is a console tool so it must be launched from a terminal (Konsole or GnomeTerminal on Linux, etc)  
-If you installed Wapiti then the binary should be in your path. Otherwise you will have to launch it from the bin folder once the archive is uncompressed.  
+Wapiti is a console tool, so it must be launched from a terminal (Konsole or GnomeTerminal on Linux, etc)  
+If you installed Wapiti then the binary should be in your path. Otherwise, you will have to launch it from the bin folder once the archive is uncompressed.  
 On Linux and OSX, just typing `wapiti` should work.
 
 ### Where can I get some help about options ? ###
 
 The manpage (Linux or HTML version) is the best way to have detailed information about the options.  
 If you are really lost, feel free to contact me.
+
+### I have a warning about the ssl module not working ! ###
+
+The `ssl` module requires the [sslscan](binary) to be present in your PATH.  
+Check if the software is available with your package manager.
 
 ### I have some UnicodeDecodeError as soon as I launch Wapiti ! ###
 
@@ -45,8 +50,7 @@ Please create an issue on https://github.com/wapiti-scanner/wapiti/issues
 
 ### Can I help the project ? ###
 
-Sure ! If you have Python3 skills I can give you some tasks to work on.  
-If you are not in development you can help translate Wapiti in your language (see https://www.transifex.com/none-538/wapiti/ )
+Sure ! If you have Python3 skills I can give you some tasks to work on.
 
 ### I love Wapiti, how to support the project ? ###
 
@@ -80,7 +84,7 @@ Yes, most of the payloads are stored in plain text or .ini files. You just have 
 
 ### Launched a Wapiti scan, it takes sooooooo muuuuuuuuch time ####
 
-Yes it can happens if there is lot of webpages and/or forms or urls with lot of inputs.  
+Yes it can happen if there is a lot of webpages and/or forms or urls with a lot of inputs.  
 There is a lot of available options to reduce the amount of scanned pages. See the manpages.
 
 ### I launched Wireshark/tshark/tcpdump/whatever and I don't see any network activity ###

@@ -4,9 +4,9 @@ import httpx
 import respx
 
 from wapitiCore.net.crawler import Response
-from wapitiCore.net.html import Html
-from wapitiCore.net.web import Request
-from wapitiCore.net.scope import Scope
+from wapitiCore.parsers.html_parser import Html
+from wapitiCore.net import Request
+from wapitiCore.net.scope import Scope, wildcard_translate
 
 
 @respx.mock
@@ -38,7 +38,11 @@ async def test_scopes():
         "http://perdu.com/subdir/page.html?k=v",
         "http://perdu.com/subdir/page.html",
         "http://lost.com/lost.html",
-        "http://external.tld/external.html"
+        "http://external.tld/external.html",
+        "https://subdomain.perdu.com/",
+        "http://subdomain.perdu.com/",
+        "http://subdomain.perdu.com/page.html",
+        "http://subdomain.perdu.com/subdir/subdirpage.html",
     }
 
     scope = Scope(Request("http://perdu.com/subdir/"), "folder")
@@ -69,8 +73,57 @@ async def test_scopes():
         "http://sub.perdu.com/page.html",
         "https://perdu.com/secure.html",
         "http://perdu.com/subdir/page.html?k=v",
-        "http://perdu.com/subdir/page.html"
+        "http://perdu.com/subdir/page.html",
+        "http://subdomain.perdu.com/",
+        "http://subdomain.perdu.com/page.html",
+        "http://subdomain.perdu.com/subdir/subdirpage.html",
+        "https://subdomain.perdu.com/"
+    }
+
+    scope = Scope(Request("http://subdomain.perdu.com/subdir/page.html?k=v"), "subdomain")
+    assert scope.filter(links) == {
+        "http://subdomain.perdu.com/",
+        "http://subdomain.perdu.com/page.html",
+        "http://subdomain.perdu.com/subdir/subdirpage.html",
+        "https://subdomain.perdu.com/"
     }
 
     scope = Scope(Request("http://perdu.com/subdir/page.html?k=v"), "punk")
     assert scope.filter(links) == links
+
+
+@pytest.mark.parametrize(
+    "wildcard_expression, texts, results",
+    [
+        [
+            "*way",
+            ["thisistheway", "wayback machine", "away from here"],
+            [True, False, False],
+        ],
+        [
+            "this*",
+            ["this is the way", "don't do this", "middle of this text"],
+            [True, False, False],
+        ],
+        [
+            "*days*",
+            ["five days of tequilla", "back in the days", "days of the week"],
+            [True, True, True],
+        ],
+        [
+            "*machine*learning*",
+            ["rage against the machine", "the machine is learning", "learning to use the machine"],
+            [False, True, False],
+        ]
+    ],
+    ids=[
+        "ends with",
+        "starts with",
+        "middle of",
+        "two words",
+    ]
+)
+def test_wildcard_translate(wildcard_expression, texts, results):
+    regex = wildcard_translate(wildcard_expression)
+    for text, result in zip(texts, results):
+        assert bool(regex.match(text)) is result

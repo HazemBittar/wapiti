@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2012-2022 Nicolas Surribas
+# Copyright (C) 2012-2023 Nicolas Surribas
+# Copyright (C) 2020-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,8 +20,6 @@
 import json
 import re
 from http.cookiejar import Cookie, CookieJar
-
-from httpx import Cookies
 
 # Regex to check whether the domain returned by CookieJar is an IP address
 # IPv6 addresses seems to have a ".local" suffix.
@@ -47,12 +46,9 @@ class JsonCookie:
                 self.cookiedict = {}
         return self.cookiedict
 
-    def addcookies(self, cookies: Cookies):
+    def addcookies(self, cookie_jar: CookieJar):
         """Inject Cookies from a CookieJar into our JSON dictionary."""
-        if not isinstance(cookies, Cookies):
-            return False
-
-        for cookie in cookies.jar:
+        for cookie in cookie_jar:
             search_ip = IP_REGEX.match(cookie.domain)
             if search_ip:
                 # Match either an IPv4 address or an IPv6 address with a local suffix
@@ -79,10 +75,10 @@ class JsonCookie:
 
     def cookiejar(self, domain):
         """Returns a cookielib.CookieJar object containing cookies matching the given domain."""
-        cook_jar = CookieJar()
+        cookie_jar = CookieJar()
 
         if not domain:
-            return cook_jar
+            return cookie_jar
 
         # Domain comes from a urlparse().netloc so we must take care of optional port number
         search_ip = IP_REGEX.match(domain)
@@ -106,12 +102,12 @@ class JsonCookie:
             matching_domains = [d for d in parent_domains if d in self.cookiedict]
 
         if not matching_domains:
-            return cook_jar
+            return cookie_jar
 
         for dom in matching_domains:
             for path in self.cookiedict[dom]:
                 for cookie_name, cookie_attrs in self.cookiedict[dom][path].items():
-                    cook = Cookie(
+                    cookie = Cookie(
                         version=cookie_attrs["version"],
                         name=cookie_name,
                         value=cookie_attrs["value"],
@@ -132,11 +128,11 @@ class JsonCookie:
                     )
 
                     if cookie_attrs["port"]:
-                        cook.port = cookie_attrs["port"]
-                        cook.port_specified = True
+                        cookie.port = cookie_attrs["port"]
+                        cookie.port_specified = True
 
-                    cook_jar.set_cookie(cook)
-        return cook_jar
+                    cookie_jar.set_cookie(cookie)
+        return cookie_jar
 
     def delete(self, domain, path=None, key=None):
         if not domain:

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2017-2022 Nicolas Surribas
+# Copyright (C) 2017-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,7 +18,6 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 import json
-import logging
 import os
 from collections import namedtuple
 from typing import AsyncIterator, Iterable, List, Optional, Sequence, Tuple
@@ -25,15 +25,15 @@ from typing import AsyncIterator, Iterable, List, Optional, Sequence, Tuple
 from aiocache import cached
 import httpx
 from sqlalchemy import (Boolean, Column, ForeignKey, Integer, MetaData,
-                        PickleType, String, Table, Text, LargeBinary, and_, func,
+                        PickleType, String, Table, Text, LargeBinary, and_,
                         literal_column, or_, select)
+from sqlalchemy.sql.functions import max as sql_max
+from sqlalchemy.sql.functions import count as sql_count
 from sqlalchemy.ext.asyncio import create_async_engine
-from wapitiCore.net import web
-from wapitiCore.net.response import Response
-from wapitiCore.net.web import Request
-from wapitiCore.main.log import logging
+from wapitiCore.net import Request, Response
 
 Payload = namedtuple("Payload", "evil_request,original_request,category,level,parameter,info,type,wstg,module,response")
+
 
 class SqlPersister:
     """This class makes the persistence tasks for persisting the crawler parameters
@@ -42,7 +42,7 @@ class SqlPersister:
 
     CRAWLER_DATA_DIR_NAME = "scans"
     CONFIG_DIR_NAME = "config"
-    HOME_DIR = os.getenv("HOME") or os.getenv("USERPROFILE")
+    HOME_DIR = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     BASE_DIR = os.path.join(HOME_DIR, ".wapiti")
     CRAWLER_DATA_DIR = os.path.join(BASE_DIR, CRAWLER_DATA_DIR_NAME)
     CONFIG_DIR = os.path.join(BASE_DIR, CONFIG_DIR_NAME)
@@ -115,12 +115,10 @@ class SqlPersister:
             Column("enctype", String(length=255), nullable=False),  # HTTP request encoding (like multipart...)
             Column("depth", Integer, nullable=False),
             Column("encoding", String(length=255)),  # page encoding (like UTF-8...)
-            Column("http_status", Integer),
-            Column("headers", PickleType),  # Pickled HTTP headers, can be huge
+            Column("headers", PickleType),  # Pickled sent HTTP headers, can be huge
             Column("referer", Text),  # Another URL so potentially huge
             Column("evil", Boolean, nullable=False),
             Column("response_id", None, ForeignKey(f"{table_prefix}responses.response_id"), nullable=True),
-            Column("sent_headers", PickleType),  # Pickled HTTP headers, can be huge
         )
 
         self.params = Table(
@@ -160,8 +158,8 @@ class SqlPersister:
             f"{table_prefix}responses", self.metadata,
             Column("response_id", Integer, primary_key=True),
             Column("url", Text, nullable=False),  # URL, can be huge
-            Column("status_code", Integer, nullable=False), # http status code
-            Column("headers", Text),  # Pickled HTTP headers, can be huge
+            Column("status_code", Integer, nullable=False),  # HTTP status code
+            Column("headers", PickleType),  # Pickled HTTP headers, can be huge
             Column("body", LargeBinary, nullable=False)  # base64 body
         )
 
@@ -188,11 +186,11 @@ class SqlPersister:
             result = await conn.execute(statement)
             return result.fetchone().value
 
-    async def set_to_browse(self, to_browse: Sequence):
+    async def set_to_browse(self, to_browse: Sequence[Request]):
         await self.save_requests([(request, None) for request in to_browse])
 
     async def get_to_browse(self) -> AsyncIterator[Request]:
-        async for path in self._get_paths(method=None, crawled=False):
+        async for path, __ in self._get_paths(method=None, crawled=False):
             yield path
 
     async def save_requests(self, paths_list: List[Tuple[Request, Optional[Response]]]):
@@ -200,6 +198,7 @@ class SqlPersister:
             return
 
         if len(paths_list) == 1:
+            # Save the unique request and response objects
             await self.save_request(paths_list[0][0], paths_list[0][1])
             return
 
@@ -216,7 +215,6 @@ class SqlPersister:
                     statement = self.paths.update().where(
                         self.paths.c.path_id == http_resource.path_id
                     ).values(
-                        http_status=http_resource.status if isinstance(http_resource.status, int) else None,
                         headers=http_resource.headers,
                         response_id=response_id
                     )
@@ -226,7 +224,7 @@ class SqlPersister:
                 if bigest_id == 0:
                     # This is a trick to be able to insert all paths and params in bulk
                     # instead of inserting path and get the new returned ID to then insert params
-                    result = await conn.execute(select(func.max(self.paths.c.path_id)))
+                    result = await conn.execute(select(sql_max(self.paths.c.path_id)))
                     result = result.scalar()
                     if result is not None:
                         bigest_id = result
@@ -236,7 +234,7 @@ class SqlPersister:
                 # Save the request along with its parameters
                 # Beware: https://docs.sqlalchemy.org/en/14/core/tutorial.html#executing-multiple-statements
                 # When executing multiple sets of parameters, each dictionary must have the same set of keys;
-                # i.e. you cant have fewer keys in some dictionaries than others.
+                # i.e. you can't have fewer keys in some dictionaries than others.
                 # This is because the Insert statement is compiled against the first dictionary in the list,
                 # and it’s assumed that all subsequent argument dictionaries are compatible with that statement.
                 all_path_values.append(
@@ -247,9 +245,7 @@ class SqlPersister:
                         "enctype": http_resource.enctype,
                         "depth": http_resource.link_depth,
                         "encoding": http_resource.encoding,
-                        "http_status": http_resource.status if isinstance(http_resource.status, int) else None,
                         "headers": http_resource.headers,
-                        "sent_headers": http_resource.sent_headers,
                         "referer": http_resource.referer,
                         "response_id": response_id,
                         "evil": False
@@ -330,7 +326,7 @@ class SqlPersister:
             url=response.url,
             status_code=response.status,
             body=response.bytes,
-            headers=json.dumps(response.headers.multi_items())
+            headers=response.headers
         )
         async with self._engine.begin() as conn:
             result = await conn.execute(statement)
@@ -343,12 +339,14 @@ class SqlPersister:
                 statement = self.paths.update().where(
                     self.paths.c.path_id == http_resource.path_id
                 ).values(
-                    http_status=http_resource.status if isinstance(http_resource.status, int) else None,
                     headers=http_resource.headers
                 )
                 await conn.execute(statement)
                 return
 
+            # We should never have a situation where we overwrite an existing response ID because a request can only be
+            # saved once without response (from the to_browse list) and once when crawled. After, the request should be
+            # removed as a duplicate by the Explorer class.
             response_id = await self.save_response(response)
 
             # as we have a unique request let's do insertion the classic way
@@ -358,9 +356,7 @@ class SqlPersister:
                 enctype=http_resource.enctype,
                 depth=http_resource.link_depth,
                 encoding=http_resource.encoding,
-                http_status=http_resource.status if isinstance(http_resource.status, int) else None,
                 headers=http_resource.headers,
-                sent_headers=http_resource.sent_headers,
                 referer=http_resource.referer,
                 response_id=response_id,
                 evil=False
@@ -435,7 +431,7 @@ class SqlPersister:
 
     async def _get_paths(
             self, path=None, method=None, crawled: bool = True, module: str = "", evil: bool = False
-    ) -> AsyncIterator[Request]:
+    ) -> AsyncIterator[Tuple[Request, Response]]:
         conditions = [self.paths.c.evil == evil]
 
         if path and isinstance(path, str):
@@ -454,6 +450,7 @@ class SqlPersister:
 
         for row in result.fetchall():
             path_id = row[0]
+            response_id = row[9]
 
             if module:
                 # Exclude requests matching the attack module, we want requests that aren't attacked yet
@@ -498,47 +495,46 @@ class SqlPersister:
                     else:
                         raise ValueError(f"Unknown param type {param_row[0]}")
 
-                http_res = web.Request(
+                request = Request(
                     row[1],
                     method=row[2],
                     encoding=row[5],
                     enctype=row[3],
-                    referer=row[8],
+                    referer=row[7],
                     get_params=get_params,
                     post_params=post_params,
                     file_params=file_params
                 )
 
                 if row[6]:
-                    http_res.status = row[6]
+                    request.set_headers(row[6])
 
-                if row[7]:
-                    http_res.set_headers(row[7])
+                request.link_depth = row[4]
+                request.path_id = path_id
+                response = await self.get_response_by_id(response_id)
 
-                if row[11]:
-                    http_res.set_sent_headers(row[11])
+                yield request, response
 
-                http_res.link_depth = row[4]
-                http_res.path_id = path_id
+    async def get_links(self, path=None, attack_module: str = "") -> AsyncIterator[Tuple[Request, Response]]:
+        async for request, response in self._get_paths(path=path, method="GET", crawled=True, module=attack_module):
+            yield request, response
 
-                yield http_res
-
-    async def get_links(self, path=None, attack_module: str = "") -> AsyncIterator[Request]:
-        async for path in self._get_paths(path=path, method="GET", crawled=True, module=attack_module):
-            yield path
-
-    async def get_forms(self, path=None, attack_module: str = "") -> AsyncIterator[Request]:
-        async for path in self._get_paths(path=path, method="POST", crawled=True, module=attack_module):
-            yield path
+    async def get_forms(self, path=None, attack_module: str = "") -> AsyncIterator[Tuple[Request, Response]]:
+        async for request, response in self._get_paths(path=path, method="POST", crawled=True, module=attack_module):
+            yield request, response
 
     async def get_all_paths(self) -> List:
-        statement = select(self.paths, self.responses.c.body) \
-                    .select_from(
-                        self.paths.join(
-                            self.responses,
-                            self.paths.c.response_id == self.responses.c.response_id,
-                        )
-                    )
+        statement = select(
+            self.paths,
+            self.responses.c.status_code,
+            self.responses.c.body,
+            self.responses.c.headers.label("response_headers")
+        ).select_from(
+            self.paths.join(
+                self.responses,
+                self.paths.c.response_id == self.responses.c.response_id,
+            )
+        )
 
         async with self._engine.begin() as conn:
             result = await conn.execute(statement)
@@ -546,21 +542,29 @@ class SqlPersister:
                 "request": {
                     "url": row.path,
                     "method": row.method,
-                    "headers": [[key, value] for key, value in (row.sent_headers or {}).items()],
+                    "headers": [[key, value] for key, value in (row.headers or {}).items()],
                     "referer": row.referer,
                     "enctype": row.enctype,
                     "encoding": row.encoding,
                     "depth": row.depth,
                 },
                 "response": {
-                    "status_code": row.http_status,
+                    "status_code": row.status_code,
                     "body": row.body,
-                    "headers": [[key, value] for key, value in (row.headers or {}).items()]
+                    "headers": [[key, value] for key, value in (row.response_headers or {}).items()]
                 },
             } for row in result.fetchall()]
 
+    async def get_necessary_paths(self) -> List:
+        requests = []
+        async for request, response in self._get_paths(crawled=False):
+            requests.append({"request": {"url": request.url, "method": request.method,
+                                         "post_params": request.post_params,
+                                         "status_code": response.status if response else None}})
+        return requests
+
     async def count_paths(self) -> int:
-        statement = select(func.count(self.paths.c.path_id)).where(~self.paths.c.evil)
+        statement = select(sql_count(self.paths.c.path_id)).where(~self.paths.c.evil)
         async with self._engine.begin() as conn:
             result = await conn.execute(statement)
             return result.fetchone()[0]
@@ -576,7 +580,7 @@ class SqlPersister:
             await conn.execute(self.attack_logs.insert(), all_values)
 
     async def count_attacked(self, module_name) -> int:
-        statement = select(func.count(self.attack_logs.c.path_id)).where(self.attack_logs.c.module == module_name)
+        statement = select(sql_count(self.attack_logs.c.path_id)).where(self.attack_logs.c.module == module_name)
         async with self._engine.begin() as conn:
             result = await conn.execute(statement)
             return result.fetchone()[0]
@@ -612,17 +616,17 @@ class SqlPersister:
             return False
 
     async def add_payload(
-        self,
-        request_id: int,
-        payload_type: str,
-        module: str,
-        category=None,
-        level=0,
-        request: web.Request = None,
-        parameter="",
-        info="",
-        wstg=None,
-        response: Response = None
+            self,
+            request_id: int,
+            payload_type: str,
+            module: str,
+            category: Optional[str] = None,
+            level: int = 0,
+            request: Request = None,
+            parameter: str = "",
+            info: str = "",
+            wstg: Optional[List[str]] = None,
+            response: Response = None
     ):
 
         response_id = await self.save_response(response)
@@ -634,12 +638,10 @@ class SqlPersister:
             enctype=request.enctype,
             depth=request.link_depth,
             encoding=request.encoding,
-            http_status=request.status if isinstance(request.status, int) else None,
             headers=request.headers,
             referer=request.referer,
             response_id=response_id,
             evil=True,
-            sent_headers=request.sent_headers
         )
         async with self._engine.begin() as conn:
             result = await conn.execute(statement)
@@ -730,25 +732,28 @@ class SqlPersister:
         response_id = int(response_id)
 
         async with self._engine.begin() as conn:
-            result = await conn.execute(select(self.responses)
-                            .where(self.responses.c.response_id == response_id)
-                            .limit(1))
+            result = await conn.execute(
+                select(self.responses).where(self.responses.c.response_id == response_id).limit(1)
+            )
 
         row = result.fetchone()
         if not row:
             return None
 
-        try:
-            response = Response(
-                httpx.Response(
-                    row.status_code,
-                    headers=httpx.Headers(json.loads(row.headers)),
-                    content=row.body
-                )
-            )
-        except httpx.DecodingError as e:
-            logging.error(e)
-            return None
+        headers = row.headers
+        if "content-encoding" in headers:
+            # httpx will try to decompress the content if it sees the following header, leading to an exception
+            del headers["content-encoding"]
+
+        response = Response(
+            httpx.Response(
+                row.status_code,
+                headers=headers,
+                content=row.body
+            ),
+            row.url,
+        )
+
         return response
 
     async def get_path_by_id(self, path_id):
@@ -791,25 +796,19 @@ class SqlPersister:
                 else:
                     raise ValueError(f"Unknown param type {param_row[0]}")
 
-            request = web.Request(
+            request = Request(
                 row[1],
                 method=row[2],
                 encoding=row[5],
                 enctype=row[3],
-                referer=row[8],
+                referer=row[7],
                 get_params=get_params,
                 post_params=post_params,
                 file_params=file_params
             )
 
             if row[6]:
-                request.status = row[6]
-
-            if row[7]:
-                request.set_headers(row[7])
-
-            if row[11]:
-                request.set_sent_headers(row[11])
+                request.set_headers(row[6])
 
             request.link_depth = row[4]
             request.path_id = path_id
@@ -873,7 +872,7 @@ class SqlPersister:
 
     async def get_big_requests_ids(self, params_count: int) -> list:
         statement = select(
-            self.params.c.path_id, func.count(self.params.c.param_id).label("params_count")
+            self.params.c.path_id, sql_count(self.params.c.param_id).label("params_count")
         ).group_by("path_id").having(literal_column("params_count") > params_count)
 
         async with self._engine.begin() as conn:

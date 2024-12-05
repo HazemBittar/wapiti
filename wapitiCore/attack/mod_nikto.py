@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2009-2022 Nicolas Surribas
+# Copyright (C) 2009-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,19 +19,18 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 import asyncio
 import csv
-import re
 import os
 import random
+import re
+from typing import List, Optional
 from urllib.parse import urlparse
-from typing import List
 
 from httpx import RequestError
 
 from wapitiCore.main.log import logging, log_verbose, log_red
 from wapitiCore.attack.attack import Attack, random_string
-from wapitiCore.language.vulnerability import _
-from wapitiCore.definitions.dangerous_resource import NAME, WSTG_CODE
-from wapitiCore.net.web import Request
+from wapitiCore.definitions.dangerous_resource import DangerousResourceFinding
+from wapitiCore.net import Request, Response
 
 
 # Nikto databases are csv files with the following fields (in order) :
@@ -67,8 +67,8 @@ class ModuleNikto(Attack):
     user_config_dir = None
     finished = False
 
-    def __init__(self, crawler, persister, attack_options, stop_event):
-        Attack.__init__(self, crawler, persister, attack_options, stop_event)
+    def __init__(self, crawler, persister, attack_options, crawler_configuration):
+        Attack.__init__(self, crawler, persister, attack_options, crawler_configuration)
         self.user_config_dir = self.persister.CONFIG_DIR
         self.junk_string = "w" + "".join(
             [random.choice("0123456789abcdefghjijklmnopqrstuvwxyz") for __ in range(0, 5000)]
@@ -101,10 +101,13 @@ class ModuleNikto(Attack):
                 writer.writerows(self.nikto_db)
 
         except IOError:
-            logging.error(_("Error downloading nikto database."))
+            logging.error("Error downloading nikto database.")
 
-    async def must_attack(self, request: Request):
+    async def must_attack(self, request: Request, response: Optional[Response] = None):
         if self.finished:
+            return False
+
+        if response.is_directory_redirection:
             return False
 
         return request.url == await self.persister.get_root_url()
@@ -129,7 +132,7 @@ class ModuleNikto(Attack):
 
         return self.status_codes[request.path] in expected_status_codes
 
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         try:
             with open(os.path.join(self.user_config_dir, self.NIKTO_DB), encoding='utf-8') as nikto_db_file:
                 reader = csv.reader(nikto_db_file)
@@ -137,8 +140,8 @@ class ModuleNikto(Attack):
                 self.nikto_db = [line for line in reader if line != [] and line[0].isdigit()]
 
         except IOError:
-            logging.warning(_("Problem with local nikto database."))
-            logging.info(_("Downloading from the web..."))
+            logging.warning("Problem with local nikto database.")
+            logging.info("Downloading from the web...")
             await self.update()
 
         self.finished = True
@@ -151,7 +154,8 @@ class ModuleNikto(Attack):
         with open(os.path.join(self.user_config_dir, self.NIKTO_DB), encoding='utf-8') as nikto_db_file:
             reader = csv.reader(nikto_db_file)
             while True:
-                if pending_count < self.options["tasks"] and not self._stop_event.is_set():
+
+                if pending_count < self.options["tasks"]:
                     try:
                         line = next(reader)
                     except StopIteration:
@@ -175,11 +179,6 @@ class ModuleNikto(Attack):
                 for task in done_tasks:
                     await task
                     tasks.remove(task)
-
-                if self._stop_event.is_set():
-                    for task in pending_tasks:
-                        task.cancel()
-                        tasks.remove(task)
 
     async def process_line(self, line):
         match = match_or = match_and = False
@@ -327,18 +326,17 @@ class ModuleNikto(Attack):
 
             info = vuln_desc
             if refs:
-                log_red(_("References:"))
+                log_red("References:")
                 log_red("  " + "\n  ".join(refs))
 
-                info += "\n" + _("References:") + "\n"
+                info += "\nReferences: \n"
                 info += "\n".join(refs)
 
             log_red("---")
 
-            await self.add_vuln_high(
-                category=NAME,
+            await self.add_high(
+                finding_class=DangerousResourceFinding,
                 request=evil_request,
                 info=info,
-                wstg=WSTG_CODE,
                 response=response
             )

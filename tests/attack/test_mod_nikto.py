@@ -1,17 +1,15 @@
 import os
-from asyncio import Event
 from itertools import chain
+from unittest.mock import AsyncMock
 
 import httpx
 import respx
 import pytest
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.language.vulnerability import _
 from wapitiCore.attack.mod_nikto import ModuleNikto
-from tests import AsyncMock
 
 
 @pytest.mark.asyncio
@@ -29,27 +27,25 @@ async def test_whole_stuff():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
     request = Request("http://perdu.com/")
     request.path_id = 1
-    request.status = 200
-    request.set_headers({"content-type": "text/html"})
     persister.get_links.return_value = chain([request])
 
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"), timeout=1)
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2, "tasks": 20}
 
-        module = ModuleNikto(crawler, persister, options, Event())
+        module = ModuleNikto(crawler, persister, options, crawler_configuration)
         module.do_get = True
         await module.attack(request)
 
         assert persister.add_payload.call_count == 1
         assert persister.add_payload.call_args_list[0][1]["module"] == "nikto"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("Potentially dangerous file")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "Potentially dangerous file"
         assert persister.add_payload.call_args_list[0][1]["request"].url == (
             "http://perdu.com/cgi-bin/a1disp3.cgi?..%2F..%2F..%2F..%2F..%2F..%2F..%2F..%2F..%2F..%2Fetc%2Fpasswd"
         )
@@ -73,7 +69,7 @@ async def test_false_positives():
     )
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -89,15 +85,13 @@ async def test_false_positives():
 
     request = Request("http://perdu.com/")
     request.path_id = 1
-    request.status = 200
-    request.set_headers({"content-type": "text/html"})
     persister.get_links.return_value = chain([request])
 
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"), timeout=1)
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2, "tasks": 20}
 
-        module = ModuleNikto(crawler, persister, options, Event())
+        module = ModuleNikto(crawler, persister, options, crawler_configuration)
         module.do_get = True
         module.NIKTO_DB = "temp_nikto_db"
         await module.attack(request)
@@ -105,7 +99,7 @@ async def test_false_positives():
 
         assert persister.add_payload.call_count == 1
         assert persister.add_payload.call_args_list[0][1]["module"] == "nikto"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("Potentially dangerous file")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "Potentially dangerous file"
         assert persister.add_payload.call_args_list[0][1]["request"].url == (
             "http://perdu.com/opendir.php?%2Fetc%2Fpasswd"
         )

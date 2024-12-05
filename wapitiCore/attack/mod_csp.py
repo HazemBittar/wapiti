@@ -1,5 +1,6 @@
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2020-2022 Nicolas Surribas
+# Copyright (C) 2020-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -14,19 +15,20 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+from typing import Optional
+
 from httpx import RequestError
 
 from wapitiCore.attack.attack import Attack
-from wapitiCore.net.web import Request
+from wapitiCore.net import Request
 from wapitiCore.net.response import Response
-from wapitiCore.language.vulnerability import _
 from wapitiCore.net.csp_utils import csp_header_to_dict, CSP_CHECK_LISTS, check_policy_values
-from wapitiCore.definitions.csp import NAME, WSTG_CODE
+from wapitiCore.definitions.csp import CspFinding
 from wapitiCore.main.log import log_red
 
-MSG_NO_CSP = _("CSP is not set")
-MSG_CSP_MISSING = _("CSP attribute \"{0}\" is missing")
-MSG_CSP_UNSAFE = _("CSP \"{0}\" value is not safe")
+MSG_NO_CSP = "CSP is not set"
+MSG_CSP_MISSING = "CSP attribute \"{0}\" is missing"
+MSG_CSP_UNSAFE = "CSP \"{0}\" value is not safe"
 
 
 # This module check the basics recommendations of CSP
@@ -34,8 +36,11 @@ class ModuleCsp(Attack):
     """Evaluate the security level of Content Security Policies of the web server."""
     name = "csp"
 
-    async def must_attack(self, request: Request):
+    async def must_attack(self, request: Request, response: Optional[Response] = None):
         if self.finished:
+            return False
+
+        if response.is_directory_redirection:
             return False
 
         if request.method == "POST":
@@ -43,7 +48,7 @@ class ModuleCsp(Attack):
 
         return request.url == await self.persister.get_root_url()
 
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         self.finished = True
         request_to_root = Request(request.url)
 
@@ -55,11 +60,10 @@ class ModuleCsp(Attack):
 
         if "Content-Security-Policy" not in response.headers:
             log_red(MSG_NO_CSP)
-            await self.add_vuln_low(
-                category=NAME,
+            await self.add_low(
+                finding_class=CspFinding,
                 request=request_to_root,
                 info=MSG_NO_CSP,
-                wstg=WSTG_CODE,
                 response=response
             )
         else:
@@ -75,10 +79,9 @@ class ModuleCsp(Attack):
                         info = MSG_CSP_UNSAFE.format(policy_name)
 
                     log_red(info)
-                    await self.add_vuln_low(
-                        category=NAME,
+                    await self.add_low(
+                        finding_class=CspFinding,
                         request=request_to_root,
                         info=info,
-                        wstg=WSTG_CODE,
                         response=response
                     )

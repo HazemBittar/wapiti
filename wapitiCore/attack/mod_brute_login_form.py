@@ -1,5 +1,6 @@
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2020-2022 Nicolas Surribas
+# Copyright (C) 2020-2023 Nicolas Surribas
+# Copyright (C) 2020-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -21,32 +22,33 @@
 from os.path import join as path_join
 from itertools import product
 import asyncio
+from typing import Optional
 
 from httpx import RequestError
 
 from wapitiCore.attack.attack import Attack
-from wapitiCore.language.vulnerability import Messages, _
-from wapitiCore.definitions.credentials import NAME, WSTG_CODE
-from wapitiCore.net.html import Html
+from wapitiCore.language.vulnerability import Messages
+from wapitiCore.definitions.credentials import CredentialsFinding
+from wapitiCore.parsers.html_parser import Html
 from wapitiCore.net.response import Response
-from wapitiCore.net.web import Request
+from wapitiCore.net import Request
 from wapitiCore.main.log import log_red
 
 
 class ModuleBruteLoginForm(Attack):
-    """Attempt to login on authentication forms using known weak credentials (like admin/admin)."""
+    """Attempt to log in on authentication forms using known weak credentials (like admin/admin)."""
     name = "brute_login_form"
-    PAYLOADS_FILE = "passwords.txt"
-    PAYLOADS_FILE_USER = "users.txt"
-    PAYLOADS_SUCCESS = "successMessage.txt"
-    PAYLOADS_FAIL = "incorrectMessage.txt"
+    PASSWORDS_FILE = "passwords.txt"
+    USERS_FILE = "users.txt"
+    SUCCESS_FILE = "successMessage.txt"
+    FAILURE_FILE = "incorrectMessage.txt"
 
     do_get = True
     do_post = True
 
     def check_success_auth(self, content_response: str):
         with open(
-            path_join(self.DATA_DIR, self.PAYLOADS_SUCCESS),
+            path_join(self.DATA_DIR, self.SUCCESS_FILE),
             errors="ignore",
             encoding='utf-8'
         ) as success_pattern_file:
@@ -58,7 +60,7 @@ class ModuleBruteLoginForm(Attack):
 
     def get_usernames(self):
         with open(
-            path_join(self.DATA_DIR, self.PAYLOADS_FILE_USER),
+            path_join(self.DATA_DIR, self.USERS_FILE),
             errors="ignore",
             encoding='utf-8'
         ) as username_file:
@@ -69,7 +71,7 @@ class ModuleBruteLoginForm(Attack):
 
     def get_passwords(self):
         with open(
-            path_join(self.DATA_DIR, self.PAYLOADS_FILE),
+            path_join(self.DATA_DIR, self.PASSWORDS_FILE),
             errors="ignore",
             encoding='utf-8'
         ) as password_file:
@@ -78,7 +80,14 @@ class ModuleBruteLoginForm(Attack):
                 if password:
                     yield password
 
-    async def send_credentials(self, login_form, username_index, password_index, username, password) -> Response:
+    async def send_credentials(
+            self,
+            login_form: Request,
+            username_index: int,
+            password_index: int,
+            username: str,
+            password: str,
+    ) -> Response:
         post_params = login_form.post_params
         get_params = login_form.get_params
 
@@ -105,9 +114,12 @@ class ModuleBruteLoginForm(Attack):
 
         return login_response
 
-    async def must_attack(self, request: Request):
+    async def must_attack(self, request: Request, response: Optional[Response] = None):
         # We leverage the fact that the crawler will fill password entries with a known placeholder
         if "Letm3in_" not in request.encoded_data + request.encoded_params:
+            return False
+
+        if response.is_directory_redirection:
             return False
 
         # We may want to remove this but if not available fallback to target URL
@@ -116,7 +128,7 @@ class ModuleBruteLoginForm(Attack):
 
         return True
 
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         try:
             response = await self.crawler.async_send(Request(request.referer, "GET"), follow_redirects=True)
         except RequestError:
@@ -148,7 +160,7 @@ class ModuleBruteLoginForm(Attack):
 
         creds_iterator = product(self.get_usernames(), self.get_passwords())
         while True:
-            if pending_count < self.options["tasks"] and not self._stop_event.is_set() and not found:
+            if pending_count < self.options["tasks"] and not found:
                 try:
                     username, password = next(creds_iterator)
                 except StopIteration:
@@ -184,11 +196,7 @@ class ModuleBruteLoginForm(Attack):
                     if result:
                         found = True
                         username, password, response = result
-                        vuln_message = _("Credentials found for URL {} : {} / {}").format(
-                            request.referer,
-                            username,
-                            password
-                        )
+                        vuln_message = f"Credentials found for URL {request.referer} : {username} / {password}"
 
                         # Recreate the request that succeed in order to print and store it
                         post_params = login_form.post_params
@@ -210,12 +218,11 @@ class ModuleBruteLoginForm(Attack):
                             link_depth=login_form.link_depth
                         )
 
-                        await self.add_vuln_low(
+                        await self.add_low(
                             request_id=request.path_id,
-                            category=NAME,
+                            finding_class=CredentialsFinding,
                             request=evil_request,
                             info=vuln_message,
-                            wstg=WSTG_CODE,
                             response=response
                         )
 
@@ -227,7 +234,7 @@ class ModuleBruteLoginForm(Attack):
 
                 tasks.remove(task)
 
-            if self._stop_event.is_set() or found:
+            if found:
                 # If we found valid credentials we need to stop pending tasks as they may generate false positives
                 # because the session is opened on the website and next attempts may appear as logged in
                 for task in pending_tasks:

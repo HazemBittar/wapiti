@@ -1,14 +1,13 @@
-from asyncio import Event
+from unittest.mock import AsyncMock
 
 import respx
 import httpx
 import pytest
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
 from wapitiCore.attack.mod_xss import ModuleXss
-from tests import AsyncMock
 
 
 @pytest.mark.asyncio
@@ -41,7 +40,7 @@ async def test_whole_stuff():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXss(crawler, persister, options, Event())
+        module = ModuleXss(crawler, persister, options, crawler_configuration)
         module.do_post = True
         for request in all_requests:
             await module.attack(request)

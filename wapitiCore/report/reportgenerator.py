@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2008-2022 Nicolas Surribas
+# Copyright (C) 2008-2023 Nicolas Surribas
+# Copyright (C) 2020-2024 Cyberwatch
 #
 # Original authors :
 # Alberto Pastor
@@ -41,18 +42,18 @@ class ReportGenerator:
         auth,
         crawled_pages: list,
         crawled_pages_nbr: int,
-        detail_report: bool
+        detailed_report_level: int
     ):
-        """Set the informations about the scan"""
+        """Set the information about the scan"""
         self._infos["target"] = target
         self._infos["date"] = time.strftime("%a, %d %b %Y %H:%M:%S +0000", date)
         self._infos["version"] = version
         self._infos["scope"] = scope
         self._infos["auth"] = auth
         self._infos["crawled_pages_nbr"] = crawled_pages_nbr
-        if detail_report is True:
+        if detailed_report_level in (1, 2):
             self._infos["crawled_pages"] = crawled_pages
-        self._infos["detailed_report"] = detail_report
+        self._infos["detailed_report_level"] = detailed_report_level
         self._date = date
 
     @property

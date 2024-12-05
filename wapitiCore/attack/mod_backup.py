@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2009-2022 Nicolas Surribas
+# Copyright (C) 2009-2023 Nicolas Surribas
 #
 # Original authors :
 # Anthony DUBOCAGE
@@ -21,33 +21,37 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-from os.path import splitext
+from os.path import splitext, join as path_join
 from urllib.parse import urljoin
+from typing import Optional, Iterator
 
 from httpx import RequestError
 
 from wapitiCore.main.log import log_verbose, log_red
-from wapitiCore.attack.attack import Attack, random_string
-from wapitiCore.language.vulnerability import _
-from wapitiCore.definitions.backup import NAME, WSTG_CODE
-from wapitiCore.net.web import Request
+from wapitiCore.attack.attack import Attack, random_string, Parameter
+from wapitiCore.definitions.backup import BackupFinding
+from wapitiCore.model import PayloadInfo
+from wapitiCore.net import Request, Response
+from wapitiCore.parsers.txt_payload_parser import TxtPayloadReader
 
 
 class ModuleBackup(Attack):
     """
     Uncover backup files on the web server.
     """
-
-    PAYLOADS_FILE = "backupPayloads.txt"
-
     name = "backup"
 
     do_get = True
     do_post = False
 
-    def __init__(self, crawler, persister, attack_options, stop_event):
-        super().__init__(crawler, persister, attack_options, stop_event)
+    def __init__(self, crawler, persister, attack_options, crawler_configuration):
+        super().__init__(crawler, persister, attack_options, crawler_configuration)
         self.false_positive_directories = {}
+
+    def get_payloads(self, _: Optional[Request] = None, __: Optional[Parameter] = None) -> Iterator[PayloadInfo]:
+        """Load the payloads from the specified file"""
+        payload_reader = TxtPayloadReader(path_join(self.DATA_DIR, "backupPayloads.txt"))
+        yield from payload_reader
 
     async def is_false_positive(self, request: Request):
         # Check for false positives by asking an improbable file inside the same folder
@@ -65,9 +69,12 @@ class ModuleBackup(Attack):
 
         return self.false_positive_directories[request.dir_name]
 
-    async def must_attack(self, request: Request):
+    async def must_attack(self, request: Request, response: Optional[Response] = None):
         page = request.path
-        headers = request.headers
+        headers = response.headers
+
+        if response.is_directory_redirection:
+            return False
 
         if page in self.attacked_get:
             return False
@@ -82,25 +89,24 @@ class ModuleBackup(Attack):
 
         return not await self.is_false_positive(request)
 
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         page = request.path
 
-        for payload, __ in self.payloads:
-            if self._stop_event.is_set():
-                break
+        for payload_info in self.get_payloads():
+            raw_payload = payload_info.payload
 
             if request.file_name:
-                if "[FILE_" not in payload:
+                if "[FILE_" not in raw_payload:
                     continue
 
-                payload = payload.replace("[FILE_NAME]", request.file_name)
-                payload = payload.replace("[FILE_NOEXT]", splitext(request.file_name)[0])
-                url = page.replace(request.file_name, payload)
+                raw_payload = raw_payload.replace("[FILE_NAME]", request.file_name)
+                raw_payload = raw_payload.replace("[FILE_NOEXT]", splitext(request.file_name)[0])
+                url = page.replace(request.file_name, raw_payload)
             else:
-                if "[FILE_" in payload:
+                if "[FILE_" in raw_payload:
                     continue
 
-                url = urljoin(request.path, payload)
+                url = urljoin(request.path, raw_payload)
 
             log_verbose(f"[¨] {url}")
 
@@ -114,16 +120,12 @@ class ModuleBackup(Attack):
                 continue
 
             if response and response.is_success:
-                # FIXME: Right now we cannot remove the pylint: disable line because the current I18N system
-                # uses the string as a token so we cannot use f string
-                # pylint: disable=consider-using-f-string
-                log_red(_("Found backup file {}".format(evil_req.url)))
+                log_red(f"Found backup file {evil_req.url}")
 
-                await self.add_vuln_low(
+                await self.add_low(
                     request_id=request.path_id,
-                    category=NAME,
+                    finding_class=BackupFinding,
                     request=evil_req,
-                    info=_("Backup file {0} found for {1}").format(url, page),
-                    wstg=WSTG_CODE,
+                    info=f"Backup file {url} found for {page}",
                     response=response
                 )

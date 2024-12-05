@@ -5,10 +5,10 @@ import respx
 import httpx
 import pytest
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
+from wapitiCore.net.classes import CrawlerConfiguration
 from wapitiCore.net.jsoncookie import JsonCookie
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.net.web import Request
+from wapitiCore.net import Request
 
 
 @pytest.mark.asyncio
@@ -17,9 +17,9 @@ async def test_cookie_dump():
     with NamedTemporaryFile() as json_fd:
         json_cookie = JsonCookie()
         json_cookie.load(json_fd.name)
-        json_cookie.delete("httpbin.org")
+        json_cookie.delete("www.destroydestroyboys.com")
 
-        url = "http://httpbin.org/welcome/"
+        url = "https://www.destroydestroyboys.com/welcome/"
         respx.get(url).mock(
             return_value=httpx.Response(
                 200,
@@ -34,12 +34,12 @@ async def test_cookie_dump():
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
             await crawler.async_get(Request(url))
 
-            json_cookie.addcookies(crawler.session_cookies)
+            json_cookie.addcookies(crawler.cookie_jar)
             json_cookie.dump()
 
             data = json.load(open(json_fd.name))
             assert data == {
-                '.httpbin.org': {
+                '.www.destroydestroyboys.com': {
                     '/': {
                         'foo': {
                             'expires': None,

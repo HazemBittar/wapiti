@@ -2,18 +2,18 @@ from subprocess import Popen
 import os
 import sys
 from time import sleep
-from asyncio import Event
+from asyncio import sleep as Sleep
+from unittest.mock import AsyncMock
 
 import pytest
 import respx
 import httpx
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
-from wapitiCore.language.vulnerability import _
+from wapitiCore.attack.attack import Parameter, ParameterSituation
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
 from wapitiCore.attack.mod_exec import ModuleExec
-from tests import AsyncMock
 
 
 @pytest.fixture(autouse=True)
@@ -57,7 +57,7 @@ async def test_whole_stuff():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleExec(crawler, persister, options, Event())
+        module = ModuleExec(crawler, persister, options, crawler_configuration)
         module.do_post = True
         for request in all_requests:
             await module.attack(request)
@@ -71,27 +71,50 @@ async def test_detection():
     respx.get(url__regex=r"http://perdu\.com/\?vuln=.*env.*").mock(
         return_value=httpx.Response(200, text="PATH=/bin:/usr/bin;PWD=/")
     )
+    respx.get(url__regex=r"http://perdu\.com/\?test=.*&vuln=.*").mock(
+        return_value=httpx.Response(200, text="Hello there")
+    )
 
     respx.get(url__regex=r"http://perdu\.com/\?vuln=.*").mock(
         return_value=httpx.Response(200, text="Hello there")
     )
 
+    respx.post(url__regex=r"http://perdu\.com/\?env=foo").mock(
+        return_value=httpx.Response(200, text="PATH=/bin:/usr/bin;PWD=/")
+    )
+
+    respx.post(url__regex=r"http://perdu\.com/.*").mock(httpx.Response(200, text="Hello there"))
+
     persister = AsyncMock()
+    all_requests = []
 
     request = Request("http://perdu.com/?vuln=hello")
     request.path_id = 1
+    all_requests.append(request)
+
+    request = Request(
+        "http://perdu.com/",
+        post_params=[["foo", "bar"]]
+    )
+    request.path_id = 2
+    all_requests.append(request)
 
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"), timeout=1)
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 1}
 
-        module = ModuleExec(crawler, persister, options, Event())
-        await module.attack(request)
+        module = ModuleExec(crawler, persister, options, crawler_configuration)
+        module.do_post = True
+        for request in all_requests:
+            await module.attack(request)
 
-        assert persister.add_payload.call_count == 1
+        assert persister.add_payload.call_count == 2
         assert persister.add_payload.call_args_list[0][1]["module"] == "exec"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("Command execution")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "Command execution"
         assert persister.add_payload.call_args_list[0][1]["request"].get_params == [["vuln", ";env;"]]
+        assert persister.add_payload.call_args_list[1][1]["module"] == "exec"
+        assert persister.add_payload.call_args_list[1][1]["category"] == "Command execution"
+        assert persister.add_payload.call_args_list[1][1]["request"].post_params == [["foo", 'env'],["env", "foo"]]
 
 
 @pytest.mark.asyncio
@@ -114,14 +137,17 @@ async def test_blind_detection():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 1, "level": 1}
 
-        module = ModuleExec(crawler, persister, options, Event())
+        module = ModuleExec(crawler, persister, options, crawler_configuration)
         module.do_post = False
 
         payloads_until_sleep = 0
-        for payload, __ in module.payloads:
-            if "sleep" in payload:
+        for payload_info in module.get_payloads(
+                request,
+                Parameter(name="vuln", situation=ParameterSituation.QUERY_STRING),
+        ):
+            if "sleep" in payload_info.payload:
                 break
-            payloads_until_sleep += 1
+            payloads_until_sleep += 2 # paylaod + reversed_payload
 
         await module.attack(request)
 
@@ -131,3 +157,8 @@ async def test_blind_detection():
         # then 3 requests for the sleep payload (first then two retries to check random lags)
         # then 1 request to check state of original request
         assert respx.calls.call_count == payloads_until_sleep + 3 + 1
+
+
+async def delayed_response():
+    await Sleep(6)
+    return httpx.Response(200, text="PATH=/bin:/usr/bin;PWD=/")

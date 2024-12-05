@@ -6,7 +6,7 @@ import httpx
 import respx
 from bs4 import BeautifulSoup
 from wapitiCore.net.response import Response
-from wapitiCore.net.html import Html
+from wapitiCore.parsers.html_parser import Html
 from wapitiCore.net.web import make_absolute
 
 
@@ -27,6 +27,10 @@ def test_make_absolute():
         ("http://base.url", "//only_this", "http://only_this/"),
         ("http://base.url", "./..//", "http://base.url/"),
         ("http://base.url", "./wrong_folder/../good_folder/", "http://base.url/good_folder/"),
+        ("http://base.url", "http://perdu.com:80", "http://perdu.com/"),
+        ("http://base.url", "https://secure.com:443", "https://secure.com/"),
+        ("http://base.url", "https://mismatch.com:80", "https://mismatch.com:80/"),
+        ("http://base.url", "http://mismatch.com:443", "http://mismatch.com:443/"),
     ]
 
     for base_url, relative_url, expected in test_cases:

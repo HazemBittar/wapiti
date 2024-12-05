@@ -1,7 +1,7 @@
 Introduction
 ============
 
-All installation methods assume you already have a Python 3.7 or more recent on your system.
+All installation methods assume you already have a Python 3.10 or more recent on your system.
 
 Note that if you have all the requirements pre-installed on your system, it is not necessary to use the setup.py script
 to use Wapiti : just extract the archive and launch the "wapiti" command line in the "bin" folder :
@@ -20,7 +20,7 @@ You may want to install Wapiti to the system just to make access easier.
 If you haven't sufficient privileges are you are afraid of breaking some dependencies in your python packages then
 using a virtual environment is the way to go. Just refer to the related section.
 
-Otherwise you will have to launch setup.py as a privileged user.
+Otherwise, you will have to launch setup.py as a privileged user.
 
 Enjoy Wapiti.
 
@@ -42,7 +42,13 @@ Now let's activate it (make it our current working environment) :
 Now you are in the virtual environment you can install Wapiti and its dependencies :
 
 ```sh
-python3 setup.py install
+make install
+```
+
+or
+
+```sh
+pip install .
 ```
 
 To leave the virtual environment just call the following command :
@@ -56,7 +62,13 @@ Remember that you will need to reactivate the environment each time you want to 
 You can install wapiti the regular way :
 
 ```sh
-python setup.py install
+make install
+```
+
+or
+
+```sh
+pip install .
 ```
 
 # Installing Wapiti using pip
@@ -75,7 +87,7 @@ You can pull latest dev version from Git :
 git clone git@github.com:wapiti-scanner/wapiti.git
 ```
 
-Then use setup.py for installation. Remember that dev version may contain unknown bugs.
+Then use [make or pip](#installing-wapiti-without-virtual-environment) for installation. Remember that dev version may contain unknown bugs.
 
 # Installation tutorials
 

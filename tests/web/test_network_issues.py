@@ -7,8 +7,8 @@ import pytest
 from httpx import ReadTimeout
 
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 
 
 @pytest.fixture(autouse=True)
@@ -30,7 +30,7 @@ async def test_chunked_timeout():
     crawler_configuration = CrawlerConfiguration(request, timeout=1)
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         with pytest.raises(ReadTimeout):
-            await crawler.async_send(request)
+            await crawler.async_send(request, timeout=1)
 
 
 @pytest.mark.asyncio
@@ -41,4 +41,4 @@ async def test_timeout():
     crawler_configuration = CrawlerConfiguration(request, timeout=1)
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         with pytest.raises(ReadTimeout):
-            await crawler.async_send(request)
+            await crawler.async_send(request, timeout=1)

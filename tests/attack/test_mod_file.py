@@ -2,16 +2,16 @@ from subprocess import Popen
 import os
 import sys
 from time import sleep
-from asyncio import Event
+from asyncio import sleep as Sleep
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
-from wapitiCore.language.vulnerability import _
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
 from wapitiCore.attack.mod_file import ModuleFile, has_prefix_or_suffix, find_warning_message, FileWarning
-from tests import AsyncMock
 
 
 @pytest.fixture(autouse=True)
@@ -36,14 +36,59 @@ async def test_inclusion_detection():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleFile(crawler, persister, options, Event())
+        module = ModuleFile(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
         assert persister.add_payload.call_count == 1
         assert persister.add_payload.call_args_list[0][1]["module"] == "file"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("Path Traversal")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "Path Traversal"
         assert ["f", "/etc/services"] in persister.add_payload.call_args_list[0][1]["request"].get_params
+
+
+@pytest.mark.asyncio
+async def test_open_redirect():
+    persister = AsyncMock()
+    request = Request("http://127.0.0.1:65085/open_redirect.php?url=toto")
+    #request.path_id = 42
+
+    crawler_configuration = CrawlerConfiguration(Request("http://127.0.0.1:65085/"))
+    async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
+        options = {"timeout": 10, "level": 2}
+
+        module = ModuleFile(crawler, persister, options, crawler_configuration)
+        module.do_post = False
+        await module.attack(request)
+
+        assert pytest.raises(httpx.InvalidURL)
+
+
+@pytest.mark.asyncio
+async def test_loknop_lfi_to_rce():
+    # https://gist.github.com/loknop/b27422d355ea1fd0d90d6dbc1e278d4d
+    persister = AsyncMock()
+    request = Request("http://127.0.0.1:65085/lfi_with_suffix.php?f=test")
+    request.path_id = 42
+
+    crawler_configuration = CrawlerConfiguration(Request("http://127.0.0.1:65085/"))
+    async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
+        options = {"timeout": 10, "level": 2}
+
+        module = ModuleFile(crawler, persister, options, crawler_configuration)
+        module.do_post = False
+        await module.attack(request)
+
+        assert persister.add_payload.call_count == 1
+        assert persister.add_payload.call_args_list[0][1]["request"].get_params[0][1].startswith(
+            "php://filter/convert.iconv.UTF8.CSISO2022KR|convert.base64-encode|convert.iconv.UTF8.UTF7|"
+        )
+
+
+async def delayed_response():
+    mock_response = httpx.Response(200, content="Warning: AnotherFunction() Description of the warning \
+               root:x:0:0:root:/root:/bin/bash")
+    await Sleep(6)
+    return mock_response
 
 
 @pytest.mark.asyncio
@@ -56,7 +101,7 @@ async def test_warning_false_positive():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleFile(crawler, persister, options, Event())
+        module = ModuleFile(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -85,7 +130,7 @@ async def test_no_crash():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleFile(crawler, persister, options, Event())
+        module = ModuleFile(crawler, persister, options, crawler_configuration)
         module.do_post = False
         for request in all_requests:
             await module.attack(request)
@@ -115,7 +160,7 @@ def test_warning_false_postitives():
         "<b>Warning</b>:  file_get_contents() expects parameter 1 to be a valid path, string given in "
         "<b>/home/blah/public_html/skin/blah/page-boatprice.php</b> on line <b>34</b><br />"
     )
-    assert find_warning_message(pattern, "http://wapiti3.ovh/e.php\0") is None
+    assert find_warning_message(pattern, "http://wapiti3.ovh/e.php[NULL]") is None
 
     pattern = (
         "<b>Warning</b>:  file_get_contents(): Filename cannot be empty in "

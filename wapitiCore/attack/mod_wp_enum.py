@@ -1,22 +1,40 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# This file is part of the Wapiti project (https://wapiti-scanner.github.io)
+# Copyright (C) 2021-2024 Cyberwatch
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 import json
 import re
 import xml
 import xml.etree.ElementTree as ET
 from os.path import join as path_join
-from typing import Match
+from typing import Match, Optional
+from httpx import RequestError
 
-from wapitiCore.attack.attack import Attack
-from wapitiCore.definitions.fingerprint import NAME as TECHNO_DETECTED
-from wapitiCore.definitions.fingerprint import WSTG_CODE as TECHNO_DETECTED_WSTG_CODE
-from wapitiCore.definitions.fingerprint_webapp import NAME as WEB_APP_VERSIONED
-from wapitiCore.language.vulnerability import _
-from wapitiCore.main.log import log_blue, logging
+from wapitiCore.attack.attack import Attack, random_string
+from wapitiCore.definitions.fingerprint import SoftwareNameDisclosureFinding
+from wapitiCore.definitions.fingerprint_webapp import SoftwareVersionDisclosureFinding
+from wapitiCore.main.log import log_blue, log_orange, logging
 from wapitiCore.net.response import Response
-from wapitiCore.net.web import Request
+from wapitiCore.net import Request
 
-MSG_TECHNO_VERSIONED = _("{0} {1} detected")
-MSG_NO_WP = _("No WordPress Detected")
-MSG_WP_VERSION = _("WordPress Version : {0}")
+MSG_TECHNO_VERSIONED = "{0} {1} detected"
+MSG_NO_WP = "No WordPress Detected"
+MSG_WP_VERSION = "WordPress Version : {0}"
 
 
 class ModuleWpEnum(Attack):
@@ -24,6 +42,21 @@ class ModuleWpEnum(Attack):
     name = "wp_enum"
     PAYLOADS_FILE_PLUGINS = "wordpress_plugins.txt"
     PAYLOADS_FILE_THEMES = "wordpress_themes.txt"
+    false_positive = {"plugins": False, "themes": False}
+
+    async def check_false_positive(self, url):
+        self.false_positive = {"plugins": False, "themes": False}
+        rand = random_string()
+        for wp_type in ["plugins", "themes"]:
+            request = Request(f'{url}/wp-content/{wp_type}/{rand}/readme.txt', 'GET')
+            try:
+                response: Response = await self.crawler.async_send(request)
+            except RequestError:
+                self.network_errors += 1
+            else:
+                if response.status == 403 or response.is_success:
+                    logging.warning(f"False positive detected for {wp_type} due to status code {response.status}")
+                    self.false_positive[wp_type] = response.status
 
     def get_plugin(self):
         with open(
@@ -55,19 +88,28 @@ class ModuleWpEnum(Attack):
             request = Request(f"{url}{'' if url.endswith('/') else '/'}{rss_url}", "GET")
             response: Response = await self.crawler.async_send(request, follow_redirects=True)
 
-            if not response.content or response.is_error:
+            if not response.content or response.is_error or "content-type" not in response.headers:
+                continue
+            if "xml" not in response.headers["content-type"]:
+                log_orange(f"Response content-type for {rss_url} is not XML")
                 continue
             root = ET.fromstring(response.content)
 
             if root is None:
                 continue
+
             try:
                 generator_text = root.findtext('./channel/generator')
             except xml.etree.ElementTree.ParseError:
                 continue
+
+            if not generator_text:
+                continue
+
             version: Match = re.search(r"\Ahttps?:\/\/wordpress\.(?:[a-z]+)\/\?v=(.*)\Z", generator_text)
             if version is None:
                 continue
+
             detected_version = version.group(1)
             break
 
@@ -79,127 +121,127 @@ class ModuleWpEnum(Attack):
 
         if detected_version:
             info_content["versions"].append(detected_version)
-            await self.add_vuln_info(
-                category=WEB_APP_VERSIONED,
+            await self.add_info(
+                finding_class=SoftwareVersionDisclosureFinding,
                 request=request,
                 info=json.dumps(info_content)
             )
 
-        await self.add_addition(
-            category=TECHNO_DETECTED,
+        await self.add_info(
+            finding_class=SoftwareNameDisclosureFinding,
             request=request,
             info=json.dumps(info_content)
         )
 
     async def detect_plugin(self, url):
         for plugin in self.get_plugin():
-            if self._stop_event.is_set():
-                break
+            request = Request(f'{url}/wp-content/plugins/{plugin}/readme.txt', 'GET')
+            try:
+                response: Response = await self.crawler.async_send(request)
+            except RequestError:
+                self.network_errors += 1
+            else:
+                if response.is_success:
+                    version = re.search(r'tag:\s*([\d.]+)', response.content)
 
-            req = Request(f'{url}/wp-content/plugins/{plugin}/readme.txt', 'GET')
-            rep = await self.crawler.async_send(req)
+                    # This check was added to detect invalid format of "Readme.txt" which can cause a crash
+                    if version:
+                        version = version.group(1)
+                    else:
+                        version = ""
 
-            if rep.is_success:
-                version = re.search(r'tag:\s*([\d.]+)', rep.content)
-
-                # This check was added to detect invalid format of "Readme.txt" who can cause a crashe
-                if version:
-                    version = version.group(1)
-                else:
-                    logging.warning("Readme.txt is not in a valid format")
-                    version = ""
-
-                plugin_detected = {
-                    "name": plugin,
-                    "versions": [version],
-                    "categories": ["WordPress plugins"],
-                    "groups": ['Add-ons']
-                }
-
-                log_blue(
-                    MSG_TECHNO_VERSIONED,
-                    plugin,
-                    version
-                )
-
-                await self.add_addition(
-                    category=TECHNO_DETECTED,
-                    request=req,
-                    info=json.dumps(plugin_detected),
-                    wstg=TECHNO_DETECTED_WSTG_CODE,
-                    response=rep
-                )
-            elif rep.status == 403:
-                plugin_detected = {
-                    "name": plugin,
-                    "versions": [""],
-                    "categories": ["WordPress plugins"],
-                    "groups": ['Add-ons']
-                }
-                log_blue(
-                    MSG_TECHNO_VERSIONED,
-                    plugin,
-                    [""]
-                )
-                await self.add_addition(
-                    category=TECHNO_DETECTED,
-                    request=req,
-                    info=json.dumps(plugin_detected),
-                    wstg=TECHNO_DETECTED_WSTG_CODE,
-                    response=rep
-                )
+                    if version or \
+                        self.false_positive["plugins"] < 200 or self.false_positive["plugins"] > 299:
+                        plugin_detected = {
+                            "name": plugin,
+                            "versions": [version],
+                            "categories": ["WordPress plugins"],
+                            "groups": ['Add-ons']
+                        }
+                        log_blue(
+                            MSG_TECHNO_VERSIONED,
+                            plugin,
+                            [version]
+                        )
+                        await self.add_info(
+                            finding_class=SoftwareNameDisclosureFinding,
+                            request=request,
+                            info=json.dumps(plugin_detected),
+                            response=response
+                        )
+                elif response.status == 403 and self.false_positive["plugins"] != 403:
+                    plugin_detected = {
+                        "name": plugin,
+                        "versions": [""],
+                        "categories": ["WordPress plugins"],
+                        "groups": ['Add-ons']
+                    }
+                    log_blue(
+                        MSG_TECHNO_VERSIONED,
+                        plugin,
+                        [""]
+                    )
+                    await self.add_info(
+                        finding_class=SoftwareNameDisclosureFinding,
+                        request=request,
+                        info=json.dumps(plugin_detected),
+                        response=response
+                    )
 
     async def detect_theme(self, url):
         for theme in self.get_theme():
-            if self._stop_event.is_set():
-                break
+            request = Request(f'{url}/wp-content/themes/{theme}/readme.txt', 'GET')
+            try:
+                response: Response = await self.crawler.async_send(request)
+            except RequestError:
+                self.network_errors += 1
+            else:
+                if response.is_success:
+                    version = re.search(r'tag:\s*([\d.]+)', response.content)
+                    # This check was added to detect invalid format of "Readme.txt" which can cause a crash
+                    if version:
+                        version = version.group(1)
+                    else:
+                        version = ""
 
-            req = Request(f'{url}/wp-content/themes/{theme}/readme.txt', 'GET')
-            rep = await self.crawler.async_send(req)
-            if rep.is_success:
-                version = re.search(r'tag:\s*([\d.]+)', rep.content)
-                # This check was added to detect invalid format of "Readme.txt" who can cause a crashe
-                if version:
-                    version = version.group(1)
-                else:
-                    version = ""
-                theme_detected = {
-                    "name": theme,
-                    "versions": [version],
-                    "categories": ["WordPress themes"],
-                    "groups": ['Add-ons']
-                }
-                log_blue(
-                    MSG_TECHNO_VERSIONED,
-                    theme,
-                    version
-                )
-                await self.add_addition(
-                    category=TECHNO_DETECTED,
-                    request=req,
-                    info=json.dumps(theme_detected),
-                    wstg=TECHNO_DETECTED_WSTG_CODE,
-                    response=rep
-                )
-            elif rep.status == 403:
-                theme_detected = {
-                    "name": theme,
-                    "versions": [""],
-                    "categories": ["WordPress themes"],
-                    "groups": ['Add-ons']
-                }
-                log_blue(
-                    MSG_TECHNO_VERSIONED,
-                    theme,
-                    [""]
-                )
-                await self.add_addition(
-                    category=TECHNO_DETECTED,
-                    request=req,
-                    info=json.dumps(theme_detected),
-                    wstg=TECHNO_DETECTED_WSTG_CODE,
-                    response=rep
-                )
+                    theme_detected = {
+                        "name": theme,
+                        "versions": [version],
+                        "categories": ["WordPress themes"],
+                        "groups": ['Add-ons']
+                    }
+
+                    if version or \
+                        self.false_positive["themes"] < 200 or self.false_positive["themes"] > 299:
+                        log_blue(
+                            MSG_TECHNO_VERSIONED,
+                            theme,
+                            [version]
+                        )
+                        await self.add_info(
+                            finding_class=SoftwareNameDisclosureFinding,
+                            request=request,
+                            info=json.dumps(theme_detected),
+                            response=response
+                        )
+                elif response.status == 403 and self.false_positive["themes"] != 403:
+                    theme_detected = {
+                        "name": theme,
+                        "versions": [""],
+                        "categories": ["WordPress themes"],
+                        "groups": ['Add-ons']
+                    }
+                    log_blue(
+                        MSG_TECHNO_VERSIONED,
+                        theme,
+                        [""]
+                    )
+                    await self.add_info(
+                        finding_class=SoftwareNameDisclosureFinding,
+                        request=request,
+                        info=json.dumps(theme_detected),
+                        response=response
+                    )
 
     @staticmethod
     def check_wordpress(response: Response):
@@ -207,7 +249,7 @@ class ModuleWpEnum(Attack):
             return True
         return False
 
-    async def must_attack(self, request: Request):
+    async def must_attack(self, request: Request, response: Optional[Response] = None):
         if self.finished:
             return False
 
@@ -215,19 +257,19 @@ class ModuleWpEnum(Attack):
             return False
         return request.url == await self.persister.get_root_url()
 
-    async def attack(self, request: Request):
-
+    async def attack(self, request: Request, response: Optional[Response] = None):
         self.finished = True
         request_to_root = Request(request.url)
 
         response = await self.crawler.async_send(request_to_root, follow_redirects=True)
         if self.check_wordpress(response):
             await self.detect_version(request_to_root.url)
+            await self.check_false_positive(request_to_root.url)
             log_blue("----")
-            log_blue(_("Enumeration of WordPress Plugins :"))
+            log_blue("Enumeration of WordPress Plugins :")
             await self.detect_plugin(request_to_root.url)
             log_blue("----")
-            log_blue(_("Enumeration of WordPress Themes :"))
+            log_blue("Enumeration of WordPress Themes :")
             await self.detect_theme(request_to_root.url)
         else:
             log_blue(MSG_NO_WP)

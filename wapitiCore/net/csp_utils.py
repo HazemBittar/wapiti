@@ -1,5 +1,5 @@
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2021-2022 Nicolas Surribas
+# Copyright (C) 2021-2023 Nicolas Surribas
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,7 +16,7 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 import re
 
-from wapitiCore.net.html import Html
+from wapitiCore.parsers.html_parser import Html
 from wapitiCore.net.response import Response
 
 

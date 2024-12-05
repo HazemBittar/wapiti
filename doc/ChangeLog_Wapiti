@@ -1,3 +1,76 @@
+30/11/2024
+    Wapiti 3.2.2
+    Core: Improvements for being able to install and run Wapiti on Windows
+
+12/11/2024
+    Wapiti 3.2.1
+    doc: fix and update documentation (usage, manpage, etc)
+    Core: authentication possible using .side files
+    Core: improve parsing of swagger files for API importation
+    Core: improve stopping mechanism with ctrl+c
+
+12/08/2024
+    Wapiti 3.2.0
+    mod_network_device: New module to detect network devices interface
+    mod_cms: New module to detect CMS Version
+    mod_csrf : ignore JSON requests
+    mod_harbor: New module to detect harbor docker registry version
+    mod_wapp: Add the capabilities to change the update url, retrieves CVEs tied to detected software versions
+    mod_ldap: module for error-based and boolean-based LDAP injection
+    Core : add Swagger / OpenAPI API crawler
+    Core: inject payloads inside JSON bodies
+    Core : fix headless explorer method
+    Core : fix max-scan-time and missing timeout
+    Python : update dependencies and pip configurations
+    mod_ssl: Move to sslscan for the ssl module instead of sslyze
+    mod_nikto, mod_wapp: update external databases
+
+09/08/2023
+    Wapiti 3.1.8
+    mod_spring4shell: New Module to detect the Spring4Shell vulnerability
+    mod_upload: New module to detect unrestricted file uploads (attempt to upload PHP code)
+    mod_https_redirect: New module to detect lack of redirect-to-https behavior
+    mod_crlf: Fix double-encoding errors
+    mod_methods: In-depth check of methods allowed by a web server
+    mod_permanentxss: Fix several bugs
+    mod_xss: Detect if HTML injection is allowed when XSS injection failed
+    mod_wapp: several improvements like CPE versions added to output
+    mod_log4shell: Add Ubiquiti UniFi to targets
+    mod_buster: Discovered assets are added to the generated report
+    Core: make module errors more verbose
+    Core: add a Dockerfile to quickly set up your own PHP endpoint
+    CLI: renamed some authentication options
+
+05/03/2023
+    Wapiti 3.1.7
+    Support for Python 3.11
+    Upgrade optional sslyze dependency
+
+31/01/2023
+    Wapiti 3.1.6
+    Wappalyze: improve detection with DOM rules
+    Core: fix proxy option
+
+16/01/2023
+    Wapiti 3.1.5
+    LFI: adds a payload for loknop technique (chaining PHP filters)
+    mod_cookie: Fix bad WSTG code for bad cookie attribute
+    Core: use proxy settings for updating
+    Core: fix creds options
+    Core: update most dependencies
+
+24/10/2022
+    Wapiti 3.1.4
+    Crawler: Adds support for Firefox headless
+    Core: improve authentication. You can now pass HTTP auth (basic, ntml, etc) AND login by sending creds to an HTML form
+    Core: remove internationalization
+
+09/07/2022
+    Wapiti 3.1.3
+    Reports: Add a new --detailed-report option that will put HTTP responses (headers and bodies) in the report.
+    Crawler: Add a new --mitm-port <PORT> option that will replace the crawler with an intercepting proxy (mitmproxy)
+    Core: Dropped support of Python 3.7
+
 13/05/2022
     Wapiti 3.1.2
     mod_http_headers: Deprecate X-XSS-Protection header

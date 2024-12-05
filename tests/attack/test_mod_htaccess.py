@@ -1,15 +1,13 @@
-from asyncio import Event
+from unittest.mock import AsyncMock
 
 import httpx
 import respx
 import pytest
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request, Response
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.language.vulnerability import _
 from wapitiCore.attack.mod_htaccess import ModuleHtaccess
-from tests import AsyncMock
 
 
 @pytest.mark.asyncio
@@ -29,29 +27,33 @@ async def test_whole_stuff():
 
     request = Request("http://perdu.com/")
     request.path_id = 1
-    request.status = 200
-    request.set_headers({"content-type": "text/html"})
-    all_requests.append(request)
+    response = Response(
+        httpx.Response(status_code=200),
+        url="http://perdu.com/"
+    )
+    all_requests.append((request, response))
 
     request = Request("http://perdu.com/admin/")
     request.path_id = 2
-    request.status = 401
-    request.set_headers({"content-type": "text/html"})
-    all_requests.append(request)
+    response = Response(
+        httpx.Response(status_code=401),
+        url="http://perdu.com/admin/"
+    )
+    all_requests.append((request, response))
 
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"), timeout=1)
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleHtaccess(crawler, persister, options, Event())
+        module = ModuleHtaccess(crawler, persister, options, crawler_configuration)
         module.do_get = True
-        for request in all_requests:
-            if await module.must_attack(request):
-                await module.attack(request)
+        for request, response in all_requests:
+            if await module.must_attack(request, response):
+                await module.attack(request, response)
             else:
                 assert request.path_id == 1
 
         assert persister.add_payload.call_count == 1
         assert persister.add_payload.call_args_list[0][1]["module"] == "htaccess"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("Htaccess Bypass")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "Htaccess Bypass"
         assert persister.add_payload.call_args_list[0][1]["request"].url == "http://perdu.com/admin/"

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2014-2022 Nicolas Surribas
+# Copyright (C) 2014-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,13 +20,13 @@
 import random
 import string
 from binascii import hexlify
+from typing import Optional
 
 from httpx import RequestError
 
 from wapitiCore.attack.attack import Attack
-from wapitiCore.language.vulnerability import _
-from wapitiCore.net.web import Request
-from wapitiCore.definitions.exec import NAME, WSTG_CODE
+from wapitiCore.net import Request, Response
+from wapitiCore.definitions.exec import CommandExecutionFinding
 from wapitiCore.main.log import log_red
 
 
@@ -39,8 +40,8 @@ class ModuleShellshock(Attack):
     do_get = True
     do_post = True
 
-    def __init__(self, crawler, persister, attack_options, stop_event):
-        Attack.__init__(self, crawler, persister, attack_options, stop_event)
+    def __init__(self, crawler, persister, attack_options, crawler_configuration):
+        Attack.__init__(self, crawler, persister, attack_options, crawler_configuration)
         empty_func = "() { :;}; "
 
         self.rand_string = "".join([random.choice(string.hexdigits) for _ in range(32)])
@@ -57,11 +58,14 @@ class ModuleShellshock(Attack):
             "cookie": empty_func + cmd
         }
 
-    async def must_attack(self, request: Request):
+    async def must_attack(self, request: Request, response: Optional[Response] = None):
+        if response.is_directory_redirection:
+            return False
+
         # We attempt to attach each script once whatever the method
         return request.path not in self.attacked_get
 
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         url = request.path
         self.attacked_get.append(url)
 
@@ -77,13 +81,12 @@ class ModuleShellshock(Attack):
         if response:
             data = response.content
             if self.rand_string in data:
-                log_red(_("URL {0} seems vulnerable to Shellshock attack!").format(url))
+                log_red(f"URL {url} seems vulnerable to Shellshock attack!")
 
-                await self.add_vuln_high(
+                await self.add_high(
                     request_id=request.path_id,
-                    category=NAME,
+                    finding_class=CommandExecutionFinding,
                     request=evil_req,
-                    info=_("URL {0} seems vulnerable to Shellshock attack").format(url),
-                    wstg=WSTG_CODE,
+                    info=f"URL {url} seems vulnerable to Shellshock attack",
                     response=response
                 )

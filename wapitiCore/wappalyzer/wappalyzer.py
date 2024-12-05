@@ -1,10 +1,32 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
+# This file is part of the Wapiti project (https://wapiti-scanner.github.io)
+# Copyright (C) 2020-2024 Cyberwatch
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 import json
 import os
 import re
 import warnings
+from typing import Set
+from collections import defaultdict
+from soupsieve.util import SelectorSyntaxError
 
 from wapitiCore.net.crawler import Response
-from wapitiCore.net.html import Html
+from wapitiCore.parsers.html_parser import Html
 
 
 class ApplicationDataException(Exception):
@@ -18,14 +40,14 @@ class ApplicationDataException(Exception):
 class ApplicationData:
     """
     Store application database.
-    For instance https://raw.githubusercontent.com/wapiti-scanner/wappalyzer/master/src/technologies/.
+    For instance https://raw.githubusercontent.com/wapiti-scanner/wappalyzerfork/master/src/technologies/.
     """
 
     def __init__(self, categories_file_path=None, groups_file_path=None, technologies_file_path=None):
         """
         Initialize a new ApplicationData object.
         """
-        base_dir = os.path.join(os.getenv("HOME") or os.getenv("USERPROFILE"), ".wapiti")
+        base_dir = os.path.join(os.getenv("HOME") or os.getenv("USERPROFILE") or "/home", ".wapiti")
         default_categories_file_path = os.path.join(base_dir, "wappalyzer", "data/categories.json")
         default_groups_file_path = os.path.join(base_dir, "wappalyzer", "data/groups.json")
         default_technologies_file_path = os.path.join(base_dir, "wappalyzer", "data/technologies.json")
@@ -55,7 +77,7 @@ class ApplicationData:
         """
         for application_name in self.applications:
 
-            for list_field in ["cats", "html", "implies", "scriptSrc"]:
+            for list_field in ["url", "cats", "html", "implies", "scriptSrc"]:
                 if list_field not in self.applications[application_name]:
                     # Complete with empty elements if not already present
                     self.applications[application_name][list_field] = []
@@ -63,10 +85,21 @@ class ApplicationData:
                     # Ensure to not iterate on a string value
                     self.applications[application_name][list_field] = [self.applications[application_name][list_field]]
 
-            for dict_field in ["meta", "js", "cookies", "headers"]:
+            for dict_field in ["meta", "cookies", "headers", "dom"]:
                 if dict_field not in self.applications[application_name]:
                     # Complete with empty elements if not already present
                     self.applications[application_name][dict_field] = {}
+                # To deal with dom
+                elif dict_field == "dom" and not isinstance(self.applications[application_name][dict_field], dict):
+                    temp_dict = {}
+                    dom = self.applications[application_name][dict_field]
+                    if isinstance(dom, str):
+                        temp_dict.update({dom: ""})
+                    elif isinstance(dom, list):
+                        for selector in dom:
+                            temp_dict.update({selector: ""})
+                    self.applications[application_name][dict_field] = temp_dict
+
                 elif not isinstance(self.applications[application_name][dict_field], dict):
                     # Raise an exception if the provided field is not a dict
                     raise ApplicationDataException(
@@ -77,7 +110,7 @@ class ApplicationData:
                 dict_items = self.applications[application_name][dict_field].items()
                 self.applications[application_name][dict_field] = {key.lower(): value for (key, value) in dict_items}
 
-            for string_field in ["url", "icon", "website", "cpe"]:
+            for string_field in ["icon", "website", "cpe"]:
                 if string_field not in self.applications[application_name]:
                     # Complete with empty elements if not already present
                     self.applications[application_name][string_field] = ""
@@ -110,7 +143,7 @@ class ApplicationData:
         """
         for application_name in self.applications:
 
-            for list_field in ["html", "implies", "scriptSrc"]:
+            for list_field in ["url", "html", "implies", "scriptSrc"]:
                 self.applications[application_name][list_field] = [
                     self.normalize_regex(pattern) for pattern in self.applications[application_name][list_field]
                 ]
@@ -129,10 +162,33 @@ class ApplicationData:
                     for i, pattern in enumerate(self.applications[application_name][dict_field][key]):
                         self.applications[application_name][dict_field][key][i] = self.normalize_regex(pattern)
 
-            for string_field in ["url"]:
-                regex = self.applications[application_name][string_field]
-                if regex != '':
-                    self.applications[application_name][string_field] = self.normalize_regex(regex)
+            # Format each dom of applications
+            tmp_dom = []
+            for (key, patterns) in self.applications[application_name]["dom"].items():
+                tmp_dom.append(self.normalize_application_regex_dom({key:patterns}))
+            self.applications[application_name]["dom"] = tmp_dom
+
+    @staticmethod
+    def normalize_application_regex_dom(dom : dict) -> dict:
+        """
+        Convert the result of wappalyzer to a generic format used by Wapiti.
+        The goal is to match with the css selector if we don't have a regex.
+        In that case we set an empty value else we put the regex.
+
+        The list contains only one item same as the idct contains only one key to fit with the wapiti format.
+        ex input of the function :
+            {"link[href*='/wp-content/plugins/wp-statistics/']": ''}
+            {'[data-block-key]': {'attributes': {'data-block-key': '[a-z0-9]{5}'}}}
+
+        ex output :
+            {"link[href*='/wp-content/plugins/wp-statistics/']": {'exists': ''}}
+            {'[data-block-key]': {'attributes': {'data-block-key': '[a-z0-9]{5}'}}}
+        """
+        css_selector = list(dom.keys())[0]
+        value = dom[css_selector]
+        if value == "":
+            return {css_selector : {"exists": ""}}
+        return dom
 
     @staticmethod
     def normalize_regex(pattern: str):
@@ -172,12 +228,123 @@ class ApplicationData:
         return self.groups
 
 
+def with_categories(func):
+    """
+    Return a list of applications with their categories and the versions that can be detected on web content.
+    """
+    def wrapper_func(self):
+        versioned_applications = func(self)
+        versioned_and_categorised_applications = versioned_applications
+
+        for application_name in versioned_applications:
+            versioned_and_categorised_applications[application_name]["name"] = application_name
+            category_names = self.get_categories(application_name)
+            versioned_and_categorised_applications[application_name]["categories"] = category_names
+
+        return versioned_and_categorised_applications
+
+    return wrapper_func
+
+
+def with_groups(func):
+    """
+    Return a list of applications with their categories, their versions & theirs groups
+    that can be detected on web content.
+    """
+    def wrapper_func(self):
+        versioned_and_categorised_applications = func(self)
+        applications = versioned_and_categorised_applications
+
+        for application_name in versioned_and_categorised_applications:
+            group_names = self.get_groups(application_name)
+            # Set the group & prevent group duplicates
+            applications[application_name]["groups"] = list(dict.fromkeys(group_names))
+
+        return applications
+
+    return wrapper_func
+
+
+def extract_version(regex_params, content) -> Set[str]:
+    """
+    Add a new detected version of application.
+    """
+    versions = set()
+    if 'version' in regex_params:
+        found_occurrences = re.findall(regex_params['regex'], content)
+        for occurrence in found_occurrences:
+            version_pattern = regex_params['version']
+
+            # Ensure to not iterate on a string value
+            if isinstance(occurrence, str):
+                occurrence = [occurrence]
+            for i, match in enumerate(occurrence):
+                # Parse ternary operator : version:\\1?\\1:\\2
+                ternary = re.search(re.compile('\\\\' + str(i + 1) + '\\?([^:]+):(.*)$', re.I), version_pattern)
+                if (ternary and len(ternary.groups()) == 2
+                        and ternary.group(1) is not None
+                        and ternary.group(2) is not None):
+                    ternary_match = ternary.group(1) if match != '' else ternary.group(2)
+                    version_pattern = version_pattern.replace(ternary.group(0), ternary_match)
+
+                # Replace back references
+                version_pattern = version_pattern.replace('\\' + str(i + 1), match)
+
+            if version_pattern != '':
+                versions.add(version_pattern)
+
+    return versions
+
+
+def detect_versions_normalize_list(rules: list, contents) -> Set[str]:
+    """
+    Determine whether the content matches the application regex
+    Add a new version of application if the content matches
+    """
+
+    versions = set()
+    for regex_params in rules:
+        # Ensure to not iterate on a string value
+        if isinstance(contents, str):
+            contents = [contents]
+        for content in contents:
+            if re.search(regex_params['regex'], content):
+                # Use that special string to show we detected the app once but not necessarily a version
+                versions.add("__detected__")
+                versions.update(extract_version(regex_params, content))
+
+    return versions
+
+
+def detect_versions_normalize_dict(rules: dict, contents) -> Set[str]:
+    """
+    Determine whether the content matches the application regex
+    Add a new version of application if the content matches
+    """
+    versions = set()
+    lowercase_keys_content = {key.lower(): value for key, value in contents.items()}
+    for (key, regex_params) in rules.items():
+        # If the key is in lowercase, we erase 'contents' by its lowercased-key version
+        if (key in contents) or (key in (contents := lowercase_keys_content)):
+            # regex_params is a list : [{"application_pattern": "..", "regex": "re.compile(..)"}, ...]
+            for i, _ in enumerate(regex_params):
+                for content_value in contents[key]:
+                    # If the regex fails, it can be due to the fact that we are looking for the key instead
+                    # The value can be set to the key so we compare
+                    if re.search(regex_params[i]['regex'], content_value) or\
+                       regex_params[i]['application_pattern'] == key.lower():
+                        # Use that special string to show we detected the app once but not necessarily a version
+                        versions.add("__detected__")
+                        versions.update(extract_version(regex_params[i], content_value))
+    return versions
+
+
 class Wappalyzer:
     """
     Python Wappalyzer driver.
     """
 
-    def __init__(self, application_data: ApplicationData, web_content: Response):
+    def __init__(self, application_data: ApplicationData, web_content: Response, js: dict):
         """
         Initialize a new Wappalyzer object.
         """
@@ -188,107 +355,116 @@ class Wappalyzer:
         self._url = web_content.url
         self._html_code = web_content.content
         # Copy some values to make sure they aren't processed more than once
-        html = Html(self._html_code, self._url)
-        self._scripts = html.scripts[:]
-        self._cookies = dict(web_content.cookies)
-        self._headers = web_content.headers
-        self._metas = dict(html.metas)
+        self.html = Html(self._html_code, self._url)
+        self._scripts = self.html.scripts[:]
+        self._js = js
+        # dict(web_content.headers)->{"Server":"Nginx, Apache, Redis" ...}
+        # With the workaround below ->{"Server":["Nginx", "Apache", "Redis"] ...}
+        # Way better for processing instead of splitting on " ,"
+        self._headers = defaultdict(list)
+        for attribute, value in web_content.headers.multi_items():
+            self._headers[attribute].append(value)
+        # Same with meta tags
+        self._metas = defaultdict(list)
+        for attribute, value in self.html.multi_meta:
+            self._metas[attribute].append(value)
+        # Cookies can't have multiple values but we must keep a dict->list format
+        self._cookies = {key: [value] for key, value in web_content.cookies.items()}
 
-    def is_application_detected(self, application: dict):
+    def detect_application_versions(self, application: dict) -> Set[str]:
         """
         Determine whether the web content matches the application regex.
         """
-        url_detected = self.is_application_detected_normalize_string(application, 'url', self._url)
-        html_detected = self.is_application_detected_normalize_list(application, 'html', self._html_code)
-        scripts_detected = self.is_application_detected_normalize_list(application, 'scriptSrc', self._scripts)
-        cookies_detected = self.is_application_detected_normalize_dict(application, 'cookies', self._cookies)
-        headers_detected = self.is_application_detected_normalize_dict(application, 'headers', self._headers)
-        meta_detected = self.is_application_detected_normalize_dict(application, 'meta', self._metas)
+        versions = set()
+        elements_to_check = {
+            "url": self._url,
+            "html": self._html_code,
+            "scriptSrc": self._scripts,
+        }
 
-        is_detected = (
-            url_detected or html_detected or scripts_detected or cookies_detected or headers_detected or meta_detected
-        )
+        for element_name,  data in elements_to_check.items():
+            versions.update(detect_versions_normalize_list(application[element_name], data))
 
-        return is_detected
+        elements_to_check = {
+            "cookies": self._cookies,
+            "headers": self._headers,
+            "meta": self._metas,
+        }
+        for element, data in elements_to_check.items():
+            versions.update(detect_versions_normalize_dict(application[element], data))
 
-    def is_application_detected_normalize_string(self, application: dict, content_type: str, contents):
-        """
-        Determine whether the content matches the application regex
-        Add a new version of application if the content matches
-        """
-        is_detected = False
-        if application[content_type] != '':
-            if re.search(application[content_type]['regex'], contents):
-                is_detected = True
-                self.update_version_detected(application, application[content_type], contents)
+        # Detect version of dom element
+        versions.update(self.detect_versions_normalize_dom(application))
 
-        return is_detected
+        return versions
 
-    def is_application_detected_normalize_list(self, application: dict, content_type: str, contents):
-        """
-        Determine whether the content matches the application regex
-        Add a new version of application if the content matches
-        """
-        is_detected = False
+    def detect_versions_normalize_dom(self, application: dict) -> Set[str]:
+        versions = set()
+        soup = self.html.soup
+        for dom_raw in application["dom"]:
+            for css_selector, value in dom_raw.items():
+                self.check_dom_attribute(soup, versions, css_selector, value)
+        return versions
 
-        for regex_params in application[content_type]:
-            # Ensure to not iterate on a string value
-            if isinstance(contents, str):
-                contents = [contents]
-            for content in contents:
-                if re.search(regex_params['regex'], content):
-                    is_detected = True
-                    self.update_version_detected(application, regex_params, content)
+    def check_dom_attribute(self, soup, versions : set, css_selector, value):
+        try:
+            match = soup.select(css_selector)
+        except SelectorSyntaxError as err:
+            warnings.warn(
+                        f"Caught {err} while selecting css selector: {css_selector}")
+            return
+        for attribute, data in value.items():
+            if attribute == "exists":
+                self.check_dom_attribute_exists(match, versions)
+            elif attribute == "text":
+                self.check_dom_attribute_text(match, versions, data)
 
-        return is_detected
-
-    def is_application_detected_normalize_dict(self, application: dict, content_type: str, contents):
-        """
-        Determine whether the content matches the application regex
-        Add a new version of application if the content matches
-        """
-        is_detected = False
-        for (key, regex_params) in application[content_type].items():
-            if key in contents:
-                # regex_params is a list : [{"application_pattern": "..", "regex": "re.compile(..)"}, ...]
-                for i, _ in enumerate(regex_params):
-                    if re.search(regex_params[i]['regex'], contents[key]):
-                        is_detected = True
-                        self.update_version_detected(application, regex_params[i], contents[key])
-
-        return is_detected
+            elif attribute == "attributes":
+                self.check_dom_attribute_others(match, versions, data)
 
     @staticmethod
-    def update_version_detected(application: dict, regex_params, content):
-        """
-        Add a new detected version of application.
-        """
-        if 'version' in regex_params:
-            found_occurrences = re.findall(regex_params['regex'], content)
-            for occurrence in found_occurrences:
-                version_pattern = regex_params['version']
+    def check_dom_attribute_exists(match, versions : set):
+        # if attribute is "exists" we just want to match with the css selector
+        if match:
+            versions.add("__detected__")
 
-                # Ensure to not iterate on a string value
-                if isinstance(occurrence, str):
-                    occurrence = [occurrence]
-                for i, match in enumerate(occurrence):
-                    # Parse ternary operator : version:\\1?\\1:\\2
-                    ternary = re.search(re.compile('\\\\' + str(i + 1) + '\\?([^:]+):(.*)$', re.I), version_pattern)
-                    if (ternary and len(ternary.groups()) == 2
-                            and ternary.group(1) is not None
-                            and ternary.group(2) is not None):
-                        ternary_match = ternary.group(1) if match != '' else ternary.group(2)
-                        version_pattern = version_pattern.replace(ternary.group(0), ternary_match)
+    @staticmethod
+    def check_dom_attribute_text(match, versions: set, data):
+        # if data is empty you just want to match with the css selector and check if the attribute exist
+        if data == "":
+            for match_html in match:
+                if match_html.getText():
+                    versions.add("__detected__")
+        # Else we have to get value inside the attribute and it must match with the regex
+        else:
+            regex = ApplicationData.normalize_regex(data)
+            for match_html in match:
+                match_html_text = match_html.getText()
+                if match_html_text and re.search(regex["regex"], str(match_html_text)):
+                    versions.add("__detected__")
+                    versions.update(extract_version(regex, str(match)))
 
-                    # Replace back references
-                    version_pattern = version_pattern.replace('\\' + str(i + 1), match)
-                if version_pattern != '':
-                    if 'versions' not in application:
-                        application['versions'] = [version_pattern]
-                    elif version_pattern not in application['versions']:
-                        application['versions'].append(version_pattern)
+    @staticmethod
+    def check_dom_attribute_others(match, versions: set, data):
+        for attribute, value  in data.items():
+            # if data is empty you just want to match with the css selector and check if the attribute exist
+            if value == "":
+                for match_html in match:
+                    if match_html.get(attribute):
+                        versions.add("__detected__")
+            # Else we have to get value inside the attribute and it must match with the regex
+            else:
+                regex = ApplicationData.normalize_regex(value)
+                for match_html in match:
+                    if attribute == "text":
+                        match_html_text = match_html.getText()
+                    else:
+                        match_html_text = match_html.get(attribute)
+                    if match_html_text and re.search(regex["regex"], str(match_html_text)):
+                        versions.add("__detected__")
+                        versions.update(extract_version(regex, str(match)))
 
-    def get_rec_implied_applications(self, detected_applications: set):
+    def get_rec_implied_applications(self, detected_applications: Set[str]) -> set:
         """
         Return the set of applications implied by the already detected applications.
         """
@@ -302,7 +478,7 @@ class Wappalyzer:
 
         return final_implied_applications
 
-    def get_implied_applications(self, applications: set):
+    def get_implied_applications(self, applications: Set[str]):
         """Look for implied applications"""
         final_implied_applications = set()
 
@@ -310,7 +486,7 @@ class Wappalyzer:
             implied_applications = self.applications[application_name]['implies']
 
             for regex_params in implied_applications:
-                final_implied_applications.update(set([regex_params['application_pattern']]))
+                final_implied_applications.update({regex_params['application_pattern']})
         return final_implied_applications
 
     def get_categories(self, application_name: str):
@@ -332,8 +508,8 @@ class Wappalyzer:
         category_numbers = self.applications.get(application_name, {}).get("cats", [])
         application_group = []
 
-        for application_categorie in category_numbers:
-            groups_numbers = self.categories.get(str(application_categorie), {}).get("groups", [])
+        for application_category in category_numbers:
+            groups_numbers = self.categories.get(str(application_category), {}).get("groups", [])
             application_group += [
                 self.groups.get(str(group_number), "").get("name", "")
                 for group_number in groups_numbers
@@ -341,67 +517,48 @@ class Wappalyzer:
 
         return application_group
 
-    def get_versions(self, application_name: str):
+    @with_groups
+    @with_categories
+    # @with_versions
+    def detect(self) -> dict:
         """
-        Returns a list of the discovered versions for a name of application.
+        Return a set of applications that can be detected on web content.
         """
-        return ([] if 'versions' not in self.applications[application_name]
-                else self.applications[application_name]['versions'])
-
-    def detect(self):
-        """
-        Return a list of applications that can be detected on web content.
-        """
-        detected_applications = set()
+        detected_applications_names = set()
         applications = self.applications
+        detected_versions = {}
+
         # Try to detect some applications
         for application_name in applications:
-            if self.is_application_detected(applications[application_name]):
-                detected_applications.add(application_name)
+            versions = self.detect_application_versions(applications[application_name])
+            if versions:
+                versions.remove("__detected__")
+                detected_versions[application_name] = {
+                    "name": application_name, "versions": list(versions),
+                    "cpe": applications.get(application_name).get("cpe", "")
+                }
+                detected_applications_names.add(application_name)
 
+        for application_name, versions in self._js.items():
+            detected_applications_names.add(application_name)
+            if application_name not in detected_versions:
+                detected_versions[application_name] = {
+                    "name": application_name, "versions": [],
+                    "cpe": applications.get(application_name).get("cpe", "")
+                }
+
+            uniq_versions = set(detected_versions[application_name]["versions"])
+            uniq_versions.update(versions)
+            detected_versions[application_name] = {
+                "name": application_name, "versions": list(uniq_versions),
+                "cpe": applications.get(application_name).get("cpe", "")
+            }
         # Add implied applications
-        detected_applications |= self.get_rec_implied_applications(detected_applications)
-
-        return detected_applications
-
-    def detect_with_versions(self):
-        """
-        Return a list of applications with the versions that can be detected on the web page.
-        """
-        detected_applications = self.detect()
-        versioned_applications = {}
-
-        for application_name in detected_applications:
-            versions = self.get_versions(application_name)
-            versioned_applications[application_name] = {"versions": versions}
-
-        return versioned_applications
-
-    def detect_with_versions_and_categories(self):
-        """
-        Return a list of applications with their categories and the versions that can be detected on web content.
-        """
-        versioned_applications = self.detect_with_versions()
-        versioned_and_categorised_applications = versioned_applications
-
-        for application_name in versioned_applications:
-            versioned_and_categorised_applications[application_name]["name"] = application_name
-            category_names = self.get_categories(application_name)
-            versioned_and_categorised_applications[application_name]["categories"] = category_names
-
-        return versioned_and_categorised_applications
-
-    def detect_with_versions_and_categories_and_groups(self):
-        """
-        Return a list of applications with their categories, their versions & theirs groups
-        that can be detected on web content.
-        """
-        versioned_and_categorised_applications = self.detect_with_versions_and_categories()
-        applications = versioned_and_categorised_applications
-
-        for application_name in versioned_and_categorised_applications:
-            group_names = self.get_groups(application_name)
-            # Set the group & prevent group duplicates
-            applications[application_name]["groups"] = list(dict.fromkeys(group_names))
-
-        return applications
+        for application_name in self.get_rec_implied_applications(detected_applications_names):
+            # If we found it in another way, don't overwrite!
+            if application_name not in detected_versions:
+                detected_versions[application_name] = {
+                    "name": application_name, "versions": [],
+                    "cpe": applications.get(application_name).get("cpe", "")
+                }
+        return detected_versions

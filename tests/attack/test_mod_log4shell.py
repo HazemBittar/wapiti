@@ -1,33 +1,22 @@
 import asyncio
 import os
 import random
-from asyncio import Event
-from typing import Dict
 from unittest import mock
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import patch, AsyncMock
 from httpx import Response as HttpxResponse
 
 import pytest
 import respx
 from dns.resolver import Resolver
-from tests import AsyncMock
+
+from tests import get_mock_open
 from wapitiCore.attack.attack import VULN
 from wapitiCore.attack.mod_log4shell import ModuleLog4Shell
-from wapitiCore.definitions.log4shell import NAME
-from wapitiCore.language.vulnerability import CRITICAL_LEVEL, _
+from wapitiCore.language.vulnerability import CRITICAL_LEVEL
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
+from wapitiCore.net.classes import CrawlerConfiguration
 from wapitiCore.net.response import Response
-from wapitiCore.net.web import Request
-
-
-def get_mock_open(files: Dict[str, str]):
-    def open_mock(filename, *_args, **_kwargs):
-        for expected_filename, content in files.items():
-            if filename == expected_filename:
-                return mock_open(read_data=content).return_value
-        raise FileNotFoundError('(mock) Unable to open {filename}')
-    return MagicMock(side_effect=open_mock)
+from wapitiCore.net import Request
 
 
 @pytest.mark.asyncio
@@ -39,7 +28,7 @@ async def test_read_headers():
     }
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -48,9 +37,9 @@ async def test_read_headers():
 
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
-        options = {"timeout": 10, "level": 2}
+        options = {"timeout": 10, "level": 2, "dns_endpoint": "8.8.8.8"}
 
-        module = ModuleLog4Shell(crawler, persister, options, Event())
+        module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
         module.DATA_DIR = ""
 
         with mock.patch("builtins.open", get_mock_open(files)) as mock_open_headers:
@@ -74,7 +63,7 @@ async def test_read_headers():
 async def test_get_batch_malicious_headers():
     persister = AsyncMock()
     persister.get_root_url.return_value = "http://perdu.com"
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -85,7 +74,7 @@ async def test_get_batch_malicious_headers():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleLog4Shell(crawler, persister, options, Event())
+        module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
         headers = random.sample(range(0, 100), 100)
         malicious_headers, headers_uuid_record = module._get_batch_malicious_headers(headers)
@@ -108,7 +97,7 @@ async def test_verify_dns():
             self.strings = [str(response).lower().encode("utf-8")]
 
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -117,48 +106,15 @@ async def test_verify_dns():
 
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
-        options = {"timeout": 10, "level": 2}
+        options = {"timeout": 10, "level": 2, "dns_endpoint": "dns.google"}
 
-        module = ModuleLog4Shell(crawler, persister, options, Event())
-        module._dns_host = ""
+        module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
         with mock.patch.object(Resolver, "resolve", return_value=(MockAnswer(True),)):
             assert await module._verify_dns("foobar") is True
 
         with mock.patch.object(Resolver, "resolve", return_value=(MockAnswer(False),)):
             assert await module._verify_dns("foobar") is False
-
-
-@pytest.mark.asyncio
-@respx.mock
-async def test_is_valid_dns():
-    persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
-    base_dir = os.path.join(home_dir, ".wapiti")
-    persister.CONFIG_DIR = os.path.join(base_dir, "config")
-
-    request = Request("http://perdu.com/")
-    request.path_id = 1
-
-    crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
-    async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
-        options = {"timeout": 10, "level": 2}
-
-        module = ModuleLog4Shell(crawler, persister, options, Event())
-
-        good_dns = "foobar"
-        bad_dns = "wrongdns"
-
-        # Good DNS
-        with patch("socket.gethostbyname", autospec=True) as mock_gethostbyname:
-            status = module._is_valid_dns(good_dns)
-            assert status
-            mock_gethostbyname.assert_called_once_with(good_dns)
-
-        # Bad DNS
-        with patch("socket.gethostbyname", side_effect=OSError("error")) as mock_gethostbyname:
-            status = module._is_valid_dns(bad_dns)
-            assert not status
 
 
 @pytest.mark.asyncio
@@ -171,7 +127,7 @@ async def test_verify_headers_vuln_found():
     # When a vuln has been found
     with patch.object(Request, "http_repr", autospec=True) as mock_http_repr:
         persister = AsyncMock()
-        home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+        home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
         base_dir = os.path.join(home_dir, ".wapiti")
         persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -182,7 +138,7 @@ async def test_verify_headers_vuln_found():
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
             options = {"timeout": 10, "level": 2}
 
-            module = ModuleLog4Shell(crawler, persister, options, Event())
+            module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
             module._verify_dns = mock_verify_dns
 
@@ -198,14 +154,13 @@ async def test_verify_headers_vuln_found():
                 request_id=-1,
                 payload_type=VULN,
                 module="log4shell",
-                category=NAME,
+                category="Log4Shell",
                 level=CRITICAL_LEVEL,
                 request=request,
                 parameter="Header: payload",
-                info=_("URL {0} seems vulnerable to Log4Shell attack by using the header {1}") \
-                            .format(modified_request.url, "Header"),
+                info=f"URL {modified_request.url} seems vulnerable to Log4Shell attack by using the header Header",
                 wstg=["WSTG-INPV-11"],
-                response=page
+                response=page,
             )
 
 
@@ -220,7 +175,7 @@ async def test_verify_headers_vuln_not_found():
     with patch.object(Request, "http_repr", autospec=True) as mock_http_repr:
 
         persister = AsyncMock()
-        home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+        home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
         base_dir = os.path.join(home_dir, ".wapiti")
         persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -231,7 +186,7 @@ async def test_verify_headers_vuln_not_found():
         async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
             options = {"timeout": 10, "level": 2}
 
-            module = ModuleLog4Shell(crawler, persister, options, Event())
+            module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
             module._verify_dns = mock_verify_dns
 
@@ -250,7 +205,7 @@ async def test_verify_headers_vuln_not_found():
 @respx.mock
 async def test_must_attack():
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -261,7 +216,7 @@ async def test_must_attack():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleLog4Shell(crawler, persister, options, Event())
+        module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
         module.finished = False
 
@@ -281,7 +236,7 @@ async def test_attack():
 
     persister = AsyncMock()
     persister.get_root_url.return_value = "http://perdu.com/"
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -289,6 +244,7 @@ async def test_attack():
     request.path_id = 1
 
     crawler = AsyncMock()
+    crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
     options = {"timeout": 10, "level": 2}
 
     request_to_attack = Request("http://perdu.com/", "GET")
@@ -298,7 +254,7 @@ async def test_attack():
 
     with mock.patch("builtins.open", get_mock_open(files)) as mock_open_headers, \
         patch.object(ModuleLog4Shell, "_verify_dns", return_value=future_verify_dns) as mock_verify_dns:
-        module = ModuleLog4Shell(crawler, persister, options, Event())
+        module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
         module.DATA_DIR = ""
         module.HEADERS_FILE = "headers.txt"
@@ -306,14 +262,14 @@ async def test_attack():
 
         mock_open_headers.assert_called_once()
 
-        # vsphere case (2) + each header batch (10) + url case (1) + druid case (1) + solr case (1)
-        assert crawler.async_send.call_count == 15
-        assert mock_verify_dns.call_count == 105
+        # vsphere case (2) + each header batch (10) + url case (1) + druid case (1) + solr case (1) + unifi case (2)
+        assert crawler.async_send.call_count == 17
+        assert mock_verify_dns.call_count == 107
 
 
 def test_init():
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -321,34 +277,34 @@ def test_init():
     request.path_id = 1
 
     crawler = AsyncMock()
-    options = {"timeout": 10, "level": 2, "dns_endpoint": None}
+    crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
 
     # When the dns_endpoint is valid
-    with patch.object(ModuleLog4Shell, "_is_valid_dns", return_value=True), \
-        patch("socket.gethostbyname", autospec=True) as mock_gethostbyname:
-        module = ModuleLog4Shell(crawler, persister, options, Event())
+    options = {"timeout": 10, "level": 2, "dns_endpoint": "whatever.use.mock"}
+    with patch("socket.gethostbyname", autospec=True) as mock_gethostbyname:
+        module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
         assert mock_gethostbyname.assert_called_once
         assert not module.finished
 
     # When the dns_endpoint is not valid
-    with patch.object(ModuleLog4Shell, "_is_valid_dns", return_value=False):
-        module = ModuleLog4Shell(crawler, persister, options, Event())
+    options = {"timeout": 10, "level": 2, "dns_endpoint": "256.512.1024.2048"}
+    module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
-        assert module.finished
+    assert module.finished
 
     # When the dns_endpoint is None
-    with patch("socket.gethostbyname", autospec=True) as mock_gethostbyname:
-        module = ModuleLog4Shell(crawler, persister, options, Event())
+    options = {"timeout": 10, "level": 2, "dns_endpoint": None}
+    module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
-        assert module.finished
+    assert module.finished
 
 
 @pytest.mark.asyncio
 @respx.mock
 async def test_attack_apache_struts():
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -356,6 +312,7 @@ async def test_attack_apache_struts():
     request.path_id = 1
 
     crawler = AsyncMock()
+    crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
     options = {"timeout": 10, "level": 2, "dns_endpoint": None}
 
     future_url_vulnerability = asyncio.Future()
@@ -366,7 +323,7 @@ async def test_attack_apache_struts():
             "_verify_url_vulnerability",
             return_value=future_url_vulnerability
     ) as mock_verify_url:
-        module = ModuleLog4Shell(crawler, persister, options, Event())
+        module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
         await module._attack_apache_struts("http://perdu.com/")
 
@@ -378,7 +335,7 @@ async def test_attack_apache_struts():
 @respx.mock
 async def test_attack_apache_druid():
     persister = AsyncMock()
-    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE")
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
     base_dir = os.path.join(home_dir, ".wapiti")
     persister.CONFIG_DIR = os.path.join(base_dir, "config")
 
@@ -386,15 +343,51 @@ async def test_attack_apache_druid():
     request.path_id = 1
 
     crawler = AsyncMock()
+    crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
     options = {"timeout": 10, "level": 2, "dns_endpoint": None}
 
     future_url_vulnerability = asyncio.Future()
     future_url_vulnerability.set_result(None)
 
-    with patch.object(ModuleLog4Shell, "_verify_url_vulnerability", return_value=future_url_vulnerability) as mock_verify_url:
-        module = ModuleLog4Shell(crawler, persister, options, Event())
+    with patch.object(
+            ModuleLog4Shell,
+            "_verify_url_vulnerability",
+            return_value=future_url_vulnerability
+    ) as mock_verify_url:
+        module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
 
         await module._attack_apache_druid_url("http://perdu.com/")
+
+        assert crawler.async_send.assert_called_once
+        assert mock_verify_url.assert_called_once
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_attack_unifi():
+    persister = AsyncMock()
+    home_dir = os.getenv("HOME") or os.getenv("USERPROFILE") or "/home"
+    base_dir = os.path.join(home_dir, ".wapiti")
+    persister.CONFIG_DIR = os.path.join(base_dir, "config")
+
+    request = Request("http://perdu.com/")
+    request.path_id = 1
+
+    crawler = AsyncMock()
+    crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"))
+    options = {"timeout": 10, "level": 2, "dns_endpoint": "dns.wapiti3.ovh"}
+
+    future_url_vulnerability = asyncio.Future()
+    future_url_vulnerability.set_result(None)
+
+    with patch.object(
+            ModuleLog4Shell,
+            "_verify_url_vulnerability",
+            return_value=future_url_vulnerability
+    ) as mock_verify_url:
+        module = ModuleLog4Shell(crawler, persister, options, crawler_configuration)
+
+        await module._attack_unifi_url("http://perdu.com/")
 
         assert crawler.async_send.assert_called_once
         assert mock_verify_url.assert_called_once

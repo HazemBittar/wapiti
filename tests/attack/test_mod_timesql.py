@@ -2,18 +2,16 @@ from subprocess import Popen
 import os
 import sys
 from time import sleep
-from asyncio import Event
+from unittest.mock import AsyncMock
 
 import pytest
 import respx
 import httpx
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.language.vulnerability import _
 from wapitiCore.attack.mod_timesql import ModuleTimesql
-from tests import AsyncMock
 
 
 @pytest.fixture(autouse=True)
@@ -36,18 +34,20 @@ async def test_timesql_detection():
     request.path_id = 42
     crawler_configuration = CrawlerConfiguration(Request("http://127.0.0.1:65082/"), timeout=1)
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
-        options = {"timeout": 1, "level": 1}
+        # Time out is set to 0 because in blind_sql.php we have a sleep(2) call
+        # and in the module we have ceil(attack_options.get("timeout", self.time_to_sleep)) + 1
+        options = {"timeout": 0, "level": 1}
 
-        module = ModuleTimesql(crawler, persister, options, Event())
+        module = ModuleTimesql(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
         assert persister.add_payload.call_count
         assert persister.add_payload.call_args_list[0][1]["module"] == "timesql"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("SQL Injection")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "SQL Injection"
         assert persister.add_payload.call_args_list[0][1]["request"].get_params == [
             ['foo', 'bar'],
-            ['vuln1', 'sleep(2)#1']
+            ['vuln1', 'sleep(1)#1']
         ]
 
 
@@ -58,9 +58,11 @@ async def test_timesql_false_positive():
     request.path_id = 42
     crawler_configuration = CrawlerConfiguration(Request("http://127.0.0.1:65082/"), timeout=1)
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
-        options = {"timeout": 1, "level": 1}
+        # Time out is set to 0 because in blind_sql.php we have a sleep(2) call
+        # and in the module we have ceil(attack_options.get("timeout", self.time_to_sleep)) + 1
+        options = {"timeout": 0, "level": 1}
 
-        module = ModuleTimesql(crawler, persister, options, Event())
+        module = ModuleTimesql(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -80,7 +82,7 @@ async def test_false_positive_request_count():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 1, "level": 1}
 
-        module = ModuleTimesql(crawler, persister, options, Event())
+        module = ModuleTimesql(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -105,7 +107,7 @@ async def test_true_positive_request_count():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 1, "level": 1}
 
-        module = ModuleTimesql(crawler, persister, options, Event())
+        module = ModuleTimesql(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 

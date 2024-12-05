@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2021-2022 Nicolas Surribas
+# Copyright (C) 2021-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -17,74 +18,140 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-from wapitiCore.language.language import _
+from typing import List, Dict
 
-TYPE = "vulnerability"
+from wapitiCore.definitions.base import FindingBase
 
-NAME = _("HTTP Secure Headers")
-SHORT_NAME = NAME
 
-WSTG_CODE_FRAME_OPTIONS = ["OSHP-X-Frame-Options"]
-WSTG_CODE_CONTENT_TYPE_OPTIONS = ["OSHP-X-Content-Type-Options"]
-WSTG_CODE_STRICT_TRANSPORT_SECURITY = ["WSTG-CONF-07", "OSHP-HTTP-Strict-Transport-Security"]
+class ClickjackingFinding(FindingBase):
+    @classmethod
+    def name(cls) -> str:
+        return "Clickjacking Protection"
 
-WSTG_CODE = (
-    WSTG_CODE_FRAME_OPTIONS +
-    WSTG_CODE_CONTENT_TYPE_OPTIONS +
-    WSTG_CODE_STRICT_TRANSPORT_SECURITY
-)
-
-DESCRIPTION = _(
-    "HTTP security headers tell the browser how to behave when handling the website's content."
-)
-
-SOLUTION = _(
-    "Use the recommendations for hardening your HTTP Security Headers."
-)
-
-REFERENCES = [
-    {
-        "title": "OSHP: OWASP Secure Headers Project Best Practices",
-        "url": "https://owasp.org/www-project-secure-headers/#div-bestpractices"
-    },
-    {
-        "title": "Netsparker: HTTP Security Headers: An Easy Way to Harden Your Web Applications",
-        "url": "https://www.netsparker.com/blog/web-security/http-security-headers/"
-    },
-    {
-        "title": "KeyCDN: Hardening Your HTTP Security Headers",
-        "url": "https://www.keycdn.com/blog/http-security-headers"
-    },
-    {
-        "title": "OWASP: HTTP SECURITY HEADERS (Protection For Browsers) (PDF)",
-        "url": "https://owasp.org/www-chapter-ghana/assets/slides/HTTP_Header_Security.pdf"
-    },
-    {
-        "title": "OWASP: Clickjacking",
-        "url": (
-            "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/"
-            "11-Client-side_Testing/09-Testing_for_Clickjacking"
+    @classmethod
+    def description(cls) -> str:
+        return (
+            "Clickjacking is a technique that tricks a user into clicking something different from what the user "
+            "perceives, potentially revealing confidential information or taking control of their computer."
         )
-    },
-    {
-        "title": "OWASP: Reflected Cross Site Scripting",
-        "url": (
-            "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/"
-            "07-Input_Validation_Testing/01-Testing_for_Reflected_Cross_Site_Scripting"
+
+    @classmethod
+    def references(cls) -> List[Dict[str, str]]:
+        return [
+            {
+                "title": "OWASP: Clickjacking",
+                "url": (
+                    "https://owasp.org/www-project-web-security-testing-guide/latest/"
+                    "4-Web_Application_Security_Testing/11-Client-side_Testing/09-Testing_for_Clickjacking"
+                )
+            },
+            {
+                "title": "KeyCDN: Preventing Clickjacking",
+                "url": "https://www.keycdn.com/support/prevent-clickjacking"
+            }
+        ]
+
+    @classmethod
+    def solution(cls) -> str:
+        return "Implement X-Frame-Options or Content Security Policy (CSP) frame-ancestors directive."
+
+    @classmethod
+    def short_name(cls) -> str:
+        return cls.name()
+
+    @classmethod
+    def type(cls) -> str:
+        return "vulnerability"
+
+    @classmethod
+    def wstg_code(cls) -> List[str]:
+        return ["OSHP-X-Frame-Options"]
+
+
+class MimeTypeConfusionFinding(FindingBase):
+    @classmethod
+    def name(cls) -> str:
+        return "MIME Type Confusion"
+
+    @classmethod
+    def description(cls) -> str:
+        return (
+            "MIME type confusion can occur when a browser interprets files as a different type than intended, "
+            "which could lead to security vulnerabilities like cross-site scripting (XSS)."
         )
-    },
-    {
-        "title": "OWASP: Stored Cross Site Scripting",
-        "url": (
-            "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/"
-            "07-Input_Validation_Testing/02-Testing_for_Stored_Cross_Site_Scripting"
+
+    @classmethod
+    def references(cls) -> List[Dict[str, str]]:
+        return [
+            {
+                "title": "OWASP: MIME Sniffing",
+                "url": "https://owasp.org/www-community/attacks/MIME_sniffing"
+            },
+            {
+                "title": "KeyCDN: Preventing MIME Type Sniffing",
+                "url": "https://www.keycdn.com/support/preventing-mime-type-sniffing"
+            }
+        ]
+
+    @classmethod
+    def solution(cls) -> str:
+        return "Implement X-Content-Type-Options to prevent MIME type sniffing."
+
+    @classmethod
+    def short_name(cls) -> str:
+        return cls.name()
+
+    @classmethod
+    def type(cls) -> str:
+        return "vulnerability"
+
+    @classmethod
+    def wstg_code(cls) -> List[str]:
+        return ["OSHP-X-Content-Type-Options"]
+
+
+class HstsFinding(FindingBase):
+    @classmethod
+    def name(cls) -> str:
+        return "HTTP Strict Transport Security (HSTS)"
+
+    @classmethod
+    def description(cls) -> str:
+        return (
+            "HSTS is a web security policy mechanism that helps to protect websites against man-in-the-middle attacks "
+            "such as protocol downgrade attacks and cookie hijacking."
         )
-    },
-    {
-        "title": "OWASP: HTTP Strict Transport Security",
-        "url": (
-            "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/"
-            "02-Configuration_and_Deployment_Management_Testing/07-Test_HTTP_Strict_Transport_Security"
-        )
-    }
-]
+
+    @classmethod
+    def references(cls) -> List[Dict[str, str]]:
+        return [
+            {
+                "title": "OWASP: HTTP Strict Transport Security",
+                "url":
+                    (
+                        "https://owasp.org/www-project-web-security-testing-guide/latest/"
+                        "4-Web_Application_Security_Testing/02-Configuration_and_Deployment_Management_Testing/"
+                        "07-Test_HTTP_Strict_Transport_Security"
+                    )
+            },
+            {
+                "title": "KeyCDN: Enabling HSTS",
+                "url": "https://www.keycdn.com/support/hsts"
+            }
+        ]
+
+    @classmethod
+    def solution(cls) -> str:
+        return "Implement the HTTP Strict Transport Security header to enforce secure connections to the server."
+
+    @classmethod
+    def short_name(cls) -> str:
+        return cls.name()
+
+    @classmethod
+    def type(cls) -> str:
+        return "vulnerability"
+
+    @classmethod
+    def wstg_code(cls) -> List[str]:
+        return ["WSTG-CONF-07", "OSHP-HTTP-Strict-Transport-Security"]

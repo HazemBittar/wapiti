@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2006-2022 Nicolas SURRIBAS
+# Copyright (C) 2006-2023 Nicolas SURRIBAS
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -35,21 +36,23 @@ warnings.filterwarnings(action='ignore', category=UserWarning, module='bs4')
 
 
 class Response:
-    def __init__(self, response: httpx.Response):
+    def __init__(self, response: httpx.Response, url: Optional[str] = None):
         """Create a new Response object.
 
         @type response: Response
         @param response: a requests Response instance."""
         self._response = response
-        # self._base = None
+        self._url = url or str(self._response.url)
 
+    # TODO: Should I remove this ? If not set in __init__ returns _response.url which in turns use _response.request.url
+    # and the request attribute may be None...
     @property
     def url(self) -> str:
         """Returns the URL of the current Response object
 
         @rtype: str
         """
-        return str(self._response.url)
+        return self._url
 
     @property
     def history(self) -> List["Response"]:
@@ -67,6 +70,7 @@ class Response:
         """
         return self._response.headers
 
+    # TODO: try to remove this?
     @property
     def sent_headers(self) -> httpx.Headers:
         return self._response.request.headers

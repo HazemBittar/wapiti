@@ -3,18 +3,16 @@ import os
 import sys
 from time import sleep
 import logging
-from asyncio import Event
+from unittest.mock import AsyncMock
 
 import pytest
 import respx
 import httpx
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
 from wapitiCore.attack.mod_xxe import ModuleXxe
-from wapitiCore.language.vulnerability import _
-from tests import AsyncMock
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -44,13 +42,13 @@ async def test_direct_body():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 1}
 
-        module = ModuleXxe(crawler, persister, options, Event())
+        module = ModuleXxe(crawler, persister, options, crawler_configuration)
 
         await module.attack(request)
 
         assert persister.add_payload.call_count
         assert persister.add_payload.call_args_list[0][1]["module"] == "xxe"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("XML External Entity")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "XML External Entity"
         assert persister.add_payload.call_args_list[0][1]["parameter"] == "raw body"
         assert "/etc/passwd" in persister.add_payload.call_args_list[0][1]["request"].post_params
 
@@ -65,7 +63,7 @@ async def test_direct_param():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 1}
 
-        module = ModuleXxe(crawler, persister, options, Event())
+        module = ModuleXxe(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -82,7 +80,7 @@ async def test_direct_query_string():
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleXxe(crawler, persister, options, Event())
+        module = ModuleXxe(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -104,7 +102,7 @@ async def test_out_of_band_body():
     request.path_id = 42
     persister.get_path_by_id.return_value = request
 
-    persister.requests.append(request)
+    persister.requests.return_value = [request]
     crawler_configuration = CrawlerConfiguration(Request("http://127.0.0.1:65084/"))
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {
@@ -114,7 +112,7 @@ async def test_out_of_band_body():
             "internal_endpoint": "http://wapiti3.ovh/"
         }
 
-        module = ModuleXxe(crawler, persister, options, Event())
+        module = ModuleXxe(crawler, persister, options, crawler_configuration)
 
         respx.get("http://wapiti3.ovh/get_xxe.php?session_id=" + module._session_id).mock(
             return_value=httpx.Response(
@@ -163,7 +161,7 @@ async def test_out_of_band_param():
             "internal_endpoint": "http://wapiti3.ovh/"
         }
 
-        module = ModuleXxe(crawler, persister, options, Event())
+        module = ModuleXxe(crawler, persister, options, crawler_configuration)
 
         respx.get("http://wapiti3.ovh/get_xxe.php?session_id=" + module._session_id).mock(
             return_value=httpx.Response(
@@ -212,7 +210,7 @@ async def test_out_of_band_query_string():
             "internal_endpoint": "http://wapiti3.ovh/"
         }
 
-        module = ModuleXxe(crawler, persister, options, Event())
+        module = ModuleXxe(crawler, persister, options, crawler_configuration)
         module.do_post = False
         await module.attack(request)
 
@@ -265,7 +263,7 @@ async def test_direct_upload():
             "internal_endpoint": "http://wapiti3.ovh/"
         }
 
-        module = ModuleXxe(crawler, persister, options, Event())
+        module = ModuleXxe(crawler, persister, options, crawler_configuration)
 
         await module.attack(request)
 

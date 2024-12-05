@@ -1,20 +1,18 @@
 import re
 from binascii import unhexlify
-from asyncio import Event
+from unittest.mock import AsyncMock
 
 import httpx
 import respx
 import pytest
 
-from wapitiCore.net.crawler_configuration import CrawlerConfiguration
-from wapitiCore.net.web import Request
+from wapitiCore.net.classes import CrawlerConfiguration
+from wapitiCore.net import Request
 from wapitiCore.net.crawler import AsyncCrawler
-from wapitiCore.language.vulnerability import _
 from wapitiCore.attack.mod_shellshock import ModuleShellshock
-from tests import AsyncMock
 
 
-def shellshock_callback(request):
+def shellshock_callback(request: httpx.Request):
     if "user-agent" in request.headers:
         search = re.search(r"(\\x[0-9a-f]{2})+", request.headers["user-agent"])
         if search:
@@ -35,26 +33,22 @@ async def test_whole_stuff():
 
     request = Request("http://perdu.com/")
     request.path_id = 1
-    request.status = 200
-    request.set_headers({"content-type": "text/html"})
     all_requests.append(request)
 
     request = Request("http://perdu.com/vuln/")
     request.path_id = 2
-    request.status = 200
-    request.set_headers({"content-type": "text/html"})
     all_requests.append(request)
 
     crawler_configuration = CrawlerConfiguration(Request("http://perdu.com/"), timeout=1)
     async with AsyncCrawler.with_configuration(crawler_configuration) as crawler:
         options = {"timeout": 10, "level": 2}
 
-        module = ModuleShellshock(crawler, persister, options, Event())
+        module = ModuleShellshock(crawler, persister, options, crawler_configuration)
         module.do_get = True
         for request in all_requests:
             await module.attack(request)
 
         assert persister.add_payload.call_count == 1
         assert persister.add_payload.call_args_list[0][1]["module"] == "shellshock"
-        assert persister.add_payload.call_args_list[0][1]["category"] == _("Command execution")
+        assert persister.add_payload.call_args_list[0][1]["category"] == "Command execution"
         assert persister.add_payload.call_args_list[0][1]["request"].url == "http://perdu.com/vuln/"

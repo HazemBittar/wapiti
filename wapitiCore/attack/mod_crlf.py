@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2008-2022 Nicolas Surribas
+# Copyright (C) 2008-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,15 +17,16 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-from urllib.parse import quote
+from typing import Optional
 
 from httpx import ReadTimeout, HTTPStatusError, RequestError
 
-from wapitiCore.attack.attack import Attack, Flags
-from wapitiCore.language.vulnerability import Messages, _
-from wapitiCore.definitions.crlf import NAME, WSTG_CODE
-from wapitiCore.definitions.resource_consumption import WSTG_CODE as RESOURCE_CONSUMPTION_WSTG_CODE
-from wapitiCore.net.web import Request
+from wapitiCore.attack.attack import Attack
+from wapitiCore.language.vulnerability import Messages
+from wapitiCore.definitions.crlf import CrlfFinding
+from wapitiCore.definitions.resource_consumption import ResourceConsumptionFinding
+from wapitiCore.model import PayloadInfo, str_to_payloadinfo
+from wapitiCore.net import Request, Response
 from wapitiCore.main.log import logging, log_verbose, log_orange, log_red
 
 
@@ -33,32 +35,34 @@ class ModuleCrlf(Attack):
     # Won't work with PHP >= 4.4.2
 
     name = "crlf"
-    MSG_VULN = _("CRLF Injection")
+    MSG_VULN = "CRLF Injection"
     do_get = True
     do_post = True
-    payloads = (quote("http://www.google.fr\r\nwapiti: 3.1.2 version"), Flags())
+    payloads = [PayloadInfo(payload="http://www.google.fr\r\nwapiti: 3.2.2 version")]
 
-    def __init__(self, crawler, persister, attack_options, stop_event):
-        super().__init__(crawler, persister, attack_options, stop_event)
+    def __init__(self, crawler, persister, attack_options, crawler_configuration):
+        super().__init__(crawler, persister, attack_options, crawler_configuration)
         self.mutator = self.get_mutator()
 
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         page = request.path
 
-        for mutated_request, parameter, _payload, _flags in self.mutator.mutate(request):
+        for mutated_request, parameter, _payload in self.mutator.mutate(
+                request,
+                str_to_payloadinfo(["http://www.google.fr\r\nwapiti: 3.2.2 version"]),
+        ):
             log_verbose(f"[¨] {mutated_request.url}")
 
             try:
                 response = await self.crawler.async_send(mutated_request)
             except ReadTimeout:
                 self.network_errors += 1
-                await self.add_anom_medium(
+                await self.add_medium(
                     request_id=request.path_id,
-                    category=Messages.RES_CONSUMPTION,
+                    finding_class=ResourceConsumptionFinding,
                     request=mutated_request,
-                    parameter=parameter,
-                    info="Timeout (" + parameter + ")",
-                    wstg=RESOURCE_CONSUMPTION_WSTG_CODE,
+                    parameter=parameter.display_name,
+                    info="Timeout (" + parameter.display_name + ")",
                 )
 
                 log_orange("---")
@@ -68,22 +72,21 @@ class ModuleCrlf(Attack):
                 log_orange("---")
             except HTTPStatusError:
                 self.network_errors += 1
-                logging.error(_("Error: The server did not understand this request"))
+                logging.error("Error: The server did not understand this request")
             except RequestError:
                 self.network_errors += 1
             else:
                 if "wapiti" in response.headers:
-                    await self.add_vuln_low(
+                    await self.add_low(
                         request_id=request.path_id,
-                        category=NAME,
+                        finding_class=CrlfFinding,
                         request=mutated_request,
-                        parameter=parameter,
-                        info=_("{0} via injection in the parameter {1}").format(self.MSG_VULN, parameter),
-                        wstg=WSTG_CODE,
-                        response=response
+                        parameter=parameter.display_name,
+                        info=f"{self.MSG_VULN} via injection in the parameter {parameter.display_name}",
+                        response=response,
                     )
 
-                    if parameter == "QUERY_STRING":
+                    if parameter.is_qs_injection:
                         injection_msg = Messages.MSG_QS_INJECT
                     else:
                         injection_msg = Messages.MSG_PARAM_INJECT
@@ -93,7 +96,7 @@ class ModuleCrlf(Attack):
                         injection_msg,
                         self.MSG_VULN,
                         page,
-                        parameter
+                        parameter.display_name
                     )
                     log_red(Messages.MSG_EVIL_REQUEST)
                     log_red(mutated_request.http_repr())

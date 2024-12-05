@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2008-2022 Nicolas Surribas
+# Copyright (C) 2008-2023 Nicolas Surribas
+# Copyright (C) 2021-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -16,18 +17,31 @@
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+import dataclasses
 import re
+from math import ceil
 from random import randint
+from typing import Optional, Iterator
 
+from bs4.builder import ParserRejectedMarkup
 from httpx import ReadTimeout, RequestError
 
-from wapitiCore.main.log import log_red, log_orange, log_verbose
-from wapitiCore.attack.attack import Attack, Flags, Mutator
-from wapitiCore.language.vulnerability import Messages, _
-from wapitiCore.definitions.sql import NAME, WSTG_CODE
-from wapitiCore.definitions.internal_error import WSTG_CODE as INTERNAL_ERROR_WSTG_CODE
-from wapitiCore.net.web import Request
-from wapitiCore.net.html import Html
+from wapitiCore.main.log import log_red, log_orange, log_verbose, logging
+from wapitiCore.attack.attack import Attack, Mutator, Parameter
+from wapitiCore.language.vulnerability import Messages
+from wapitiCore.definitions.sql import SqlInjectionFinding
+from wapitiCore.definitions.internal_error import InternalErrorFinding
+from wapitiCore.model import str_to_payloadinfo
+from wapitiCore.net import Request, Response
+from wapitiCore.parsers.html_parser import Html
+
+
+@dataclasses.dataclass
+class PayloadInfo:
+    payload: str
+    platform: str
+    section: bool
+
 
 # From https://github.com/sqlmapproject/sqlmap/blob/master/data/xml/errors.xml
 DBMS_ERROR_PATTERNS = {
@@ -145,6 +159,7 @@ DBMS_ERROR_PATTERNS = {
         re.compile(r"(Microsoft|System)\.Data\.SQLite\.SQLiteException"),
         re.compile(r"Warning.*?\W(sqlite_|SQLite3::)"),
         re.compile(r"\[SQLITE_ERROR\]"),
+        re.compile(r"Error: SQLITE_ERROR:"),  # OWASP Juice Shop
         re.compile(r"SQLite error \d+:"),
         re.compile(r"sqlite3.OperationalError:"),
         re.compile(r"SQLite3::SQLException"),
@@ -234,16 +249,15 @@ DBMS_ERROR_PATTERNS = {
 }
 
 
-def generate_boolean_payloads():
-    payloads = []
+def generate_boolean_payloads(_: Request, __: Parameter) -> Iterator[PayloadInfo]:
+    # payloads = []
     for use_parenthesis in (False, True):
         for separator in ("", "'", "\""):
-            for payload in generate_boolean_test_values(separator, use_parenthesis):
-                payloads.append(payload)
-    return payloads
+            yield from generate_boolean_test_values(separator, use_parenthesis)
+    # return payloads
 
 
-def generate_boolean_test_values(separator: str, parenthesis: bool):
+def generate_boolean_test_values(separator: str, parenthesis: bool) -> Iterator[PayloadInfo]:
     fmt_string = (
         "[VALUE]{sep} AND {left_value}={right_value} AND {sep}{padding_value}{sep}={sep}{padding_value}",
         "[VALUE]{sep}) AND {left_value}={right_value} AND ({sep}{padding_value}{sep}={sep}{padding_value}"
@@ -255,10 +269,15 @@ def generate_boolean_test_values(separator: str, parenthesis: bool):
         padding_value = randint(10, 99)
 
         # First two payloads give negative tests
-        # Due to Mutator limitations we leverage some Flags attributes to put our indicators
-        yield (
-            fmt_string.format(left_value=value1, right_value=value2, padding_value=padding_value, sep=separator),
-            Flags(section="False", platform=f"{'p' if parenthesis else ''}_{separator}")
+        yield PayloadInfo(
+            payload=fmt_string.format(
+                left_value=value1,
+                right_value=value2,
+                padding_value=padding_value,
+                sep=separator
+            ),
+            section=False,
+            platform=f"{'p' if parenthesis else ''}_{separator}",
         )
 
     for __ in range(2):
@@ -266,45 +285,51 @@ def generate_boolean_test_values(separator: str, parenthesis: bool):
         padding_value = randint(10, 99)
 
         # Last two payloads give positive tests
-        yield (
-            fmt_string.format(left_value=value1, right_value=value1, padding_value=padding_value, sep=separator),
-            Flags(section="True", platform=f"{'p' if parenthesis else ''}_{separator}")
+        yield PayloadInfo(
+            payload=fmt_string.format(
+                left_value=value1,
+                right_value=value1,
+                padding_value=padding_value,
+                sep=separator,
+            ),
+            section=True,
+            platform=f"{'p' if parenthesis else ''}_{separator}",
         )
 
 
 class ModuleSql(Attack):
     """
-    Detect SQL (also LDAP and XPath) injection vulnerabilities using error-based or boolean-based (blind) techniques.
+    Detect SQL (also XPath) injection vulnerabilities using error-based or boolean-based (blind) techniques.
     """
-
     time_to_sleep = 6
     name = "sql"
-    payloads = ("[VALUE]\xBF'\"(", Flags())
+    payloads = ["[VALUE]\xBF'\"("]
     filename_payload = "'\"("  # TODO: wait for https://github.com/shazow/urllib3/pull/856 then use that for files upld
 
-    def __init__(self, crawler, persister, attack_options, stop_event):
-        super().__init__(crawler, persister, attack_options, stop_event)
+    def __init__(self, crawler, persister, attack_options, crawler_configuration):
+        super().__init__(crawler, persister, attack_options, crawler_configuration)
         self.mutator = self.get_mutator()
+        self.time_to_sleep = ceil(attack_options.get("timeout", self.time_to_sleep)) + 1
 
     @staticmethod
     def _find_pattern_in_response(data):
         for dbms, regex_list in DBMS_ERROR_PATTERNS.items():
             for regex in regex_list:
                 if regex.search(data):
-                    return f"{_('SQL Injection')} (DMBS: {dbms}"
+                    return f"SQL Injection (DBMS: {dbms})"
 
         # Can't guess the DBMS but may be useful
         if "Unclosed quotation mark after the character string" in data:
-            return _(".NET SQL Injection")
+            return ".NET SQL Injection"
         if "StatementCallback; bad SQL grammar" in data:
-            return _("Spring JDBC Injection")
+            return "Spring JDBC Injection"
 
         if "XPathException" in data:
-            return _("XPath Injection")
+            return "XPath Injection"
         if "Warning: SimpleXMLElement::xpath():" in data:
-            return _("XPath Injection")
-        if "supplied argument is not a valid ldap" in data or "javax.naming.NameNotFoundException" in data:
-            return _("LDAP Injection")
+            return "XPath Injection"
+        if "Error parsing XPath" in data:
+            return "XPath Injection"
 
         return ""
 
@@ -318,10 +343,7 @@ class ModuleSql(Attack):
                 return True
         return False
 
-    def set_timeout(self, timeout):
-        self.time_to_sleep = str(1 + int(timeout))
-
-    async def attack(self, request: Request):
+    async def attack(self, request: Request, response: Optional[Response] = None):
         vulnerable_parameters = await self.error_based_attack(request)
         await self.boolean_based_attack(request, vulnerable_parameters)
 
@@ -332,7 +354,10 @@ class ModuleSql(Attack):
         vulnerable_parameter = False
         vulnerable_parameters = set()
 
-        for mutated_request, parameter, __, __ in self.mutator.mutate(request):
+        for mutated_request, parameter, __ in self.mutator.mutate(
+                request,
+                str_to_payloadinfo(self.payloads),
+        ):
             if current_parameter != parameter:
                 # Forget what we know about current parameter
                 current_parameter = parameter
@@ -350,29 +375,27 @@ class ModuleSql(Attack):
             else:
                 vuln_info = self._find_pattern_in_response(response.content)
                 if vuln_info and not await self.is_false_positive(request):
-                    # An error message implies that a vulnerability may exists
-
-                    if parameter == "QUERY_STRING":
+                    # An error message implies that a vulnerability may exist
+                    if parameter.is_qs_injection:
                         vuln_message = Messages.MSG_QS_INJECT.format(vuln_info, page)
                     else:
-                        vuln_message = _("{0} via injection in the parameter {1}").format(vuln_info, parameter)
+                        vuln_message = f"{vuln_info} via injection in the parameter {parameter.display_name}"
 
-                    await self.add_vuln_critical(
+                    await self.add_critical(
                         request_id=request.path_id,
-                        category=NAME,
+                        finding_class=SqlInjectionFinding,
                         request=mutated_request,
                         info=vuln_message,
-                        parameter=parameter,
-                        wstg=WSTG_CODE,
+                        parameter=parameter.display_name,
                         response=response
                     )
 
                     log_red("---")
                     log_red(
-                        Messages.MSG_QS_INJECT if parameter == "QUERY_STRING" else Messages.MSG_PARAM_INJECT,
+                        Messages.MSG_QS_INJECT if parameter.is_qs_injection else Messages.MSG_PARAM_INJECT,
                         vuln_info,
                         page,
-                        parameter
+                        parameter.display_name
                     )
                     log_red(Messages.MSG_EVIL_REQUEST)
                     log_red(mutated_request.http_repr())
@@ -380,22 +403,21 @@ class ModuleSql(Attack):
 
                     # We reached maximum exploitation for this parameter, don't send more payloads
                     vulnerable_parameter = True
-                    vulnerable_parameters.add(parameter)
+                    vulnerable_parameters.add(parameter.display_name)
 
                 elif response.is_server_error and not saw_internal_error:
                     saw_internal_error = True
-                    if parameter == "QUERY_STRING":
+                    if parameter.is_qs_injection:
                         anom_msg = Messages.MSG_QS_500
                     else:
-                        anom_msg = Messages.MSG_PARAM_500.format(parameter)
+                        anom_msg = Messages.MSG_PARAM_500.format(parameter.display_name)
 
-                    await self.add_anom_high(
+                    await self.add_high(
                         request_id=request.path_id,
-                        category=Messages.ERROR_500,
+                        finding_class=InternalErrorFinding,
                         request=mutated_request,
                         info=anom_msg,
-                        parameter=parameter,
-                        wstg=INTERNAL_ERROR_WSTG_CODE,
+                        parameter=parameter.display_name,
                         response=response
                     )
 
@@ -418,6 +440,9 @@ class ModuleSql(Attack):
         except ReadTimeout:
             self.network_errors += 1
             return
+        except ParserRejectedMarkup as exc:
+            logging.warning(exc)
+            return
 
         methods = ""
         if self.do_get:
@@ -427,7 +452,6 @@ class ModuleSql(Attack):
 
         mutator = Mutator(
             methods=methods,
-            payloads=generate_boolean_payloads(),
             qs_inject=self.must_attack_query_string,
             skip=self.options.get("skipped_parameters", set()) | parameters_to_skip
         )
@@ -441,43 +465,43 @@ class ModuleSql(Attack):
         last_mutated_request = None
         last_response = None
 
-        for mutated_request, parameter, __, flags in mutator.mutate(request):
+        for mutated_request, parameter, payload_info in mutator.mutate(request, generate_boolean_payloads):
+
             # Make sure we always pass through the following block to see changes of payloads formats
-            if current_session != flags.platform:
+            if current_session != payload_info.platform:
                 # We start a new set of payloads, let's analyse results for previous ones
                 if test_results and all(test_results):
                     # We got a winner
                     skip_till_next_parameter = True
-                    vuln_info = _("SQL Injection")
+                    vuln_info = "SQL Injection"
 
-                    if current_parameter == "QUERY_STRING":
+                    if current_parameter.is_qs_injection:
                         vuln_message = Messages.MSG_QS_INJECT.format(vuln_info, page)
                     else:
-                        vuln_message = _("{0} via injection in the parameter {1}").format(vuln_info, current_parameter)
+                        vuln_message = f"{vuln_info} via injection in the parameter {current_parameter.name}"
 
-                    await self.add_vuln_critical(
+                    await self.add_critical(
                         request_id=request.path_id,
-                        category=NAME,
+                        finding_class=SqlInjectionFinding,
                         request=last_mutated_request,
                         info=vuln_message,
-                        parameter=current_parameter,
-                        wstg=WSTG_CODE,
+                        parameter=current_parameter.name,
                         response=last_response
                     )
 
                     log_red("---")
                     log_red(
-                        Messages.MSG_QS_INJECT if current_parameter == "QUERY_STRING" else Messages.MSG_PARAM_INJECT,
+                        Messages.MSG_QS_INJECT if current_parameter.is_qs_injection else Messages.MSG_PARAM_INJECT,
                         vuln_info,
                         page,
-                        current_parameter
+                        current_parameter.name
                     )
                     log_red(Messages.MSG_EVIL_REQUEST)
                     log_red(last_mutated_request.http_repr())
                     log_red("---")
 
                 # Don't forget to reset session and results
-                current_session = flags.platform
+                current_session = payload_info.platform
                 test_results = []
 
             if current_parameter != parameter:
@@ -504,11 +528,11 @@ class ModuleSql(Attack):
 
             Html(response.content, url=mutated_request.url)
             comparison = (
-                response.status == good_status and
-                response.redirection_url == good_redirect and
-                Html(response.content, url=mutated_request.url).text_only_md5 == good_hash
+                    response.status == good_status and
+                    response.redirection_url == good_redirect and
+                    Html(response.content, url=mutated_request.url).text_only_md5 == good_hash
             )
 
-            test_results.append(comparison == (flags.section == "True"))
+            test_results.append(comparison == (payload_info.section is True))
             last_mutated_request = mutated_request
             last_response = response

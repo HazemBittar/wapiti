@@ -3,7 +3,8 @@
 # HTML Report Generator Module for Wapiti Project
 # Wapiti Project (https://wapiti-scanner.github.io)
 #
-# Copyright (C) 2017-2022 Nicolas SURRIBAS
+# Copyright (C) 2017-2023 Nicolas SURRIBAS
+# Copyright (C) 2020-2024 Cyberwatch
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -20,10 +21,10 @@
 # Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 
 import os
+from importlib.resources import files
 from shutil import copytree, rmtree, copy
 from urllib.parse import urlparse
 import time
-from pkg_resources import resource_filename
 
 from mako.template import Template
 
@@ -70,16 +71,16 @@ class HTMLReportGenerator(JSONReportGenerator):
                     pass
 
                 copytree(
-                    resource_filename("wapitiCore", os.path.join(self.REPORT_DIR, subdir)),
+                    str(files("wapitiCore").joinpath(self.REPORT_DIR, subdir)),
                     os.path.join(output_path, subdir)
                 )
 
-            copy(resource_filename("wapitiCore", os.path.join(self.REPORT_DIR, "logo_clear.png")), output_path)
+            copy(str(files("wapitiCore").joinpath(self.REPORT_DIR, "logo_clear.png")), output_path)
         else:
-            copytree(resource_filename("wapitiCore", self.REPORT_DIR), output_path)
+            copytree(str(files("wapitiCore").joinpath(self.REPORT_DIR)), output_path)
 
         mytemplate = Template(
-            filename=resource_filename("wapitiCore", os.path.join(self.REPORT_DIR, "report.html")),
+            filename=str(files("wapitiCore").joinpath(self.REPORT_DIR, "report.html")),
             input_encoding="utf-8",
             output_encoding="utf-8"
         )
@@ -106,7 +107,7 @@ class HTMLReportGenerator(JSONReportGenerator):
                     additionals=self._additionals,
                     flaws=self._flaw_types,
                     level_to_emoji=level_to_emoji,
-                    detailed_report=self._infos["detailed_report"]
+                    detailed_report_level=self._infos["detailed_report_level"]
                 )
             )
 

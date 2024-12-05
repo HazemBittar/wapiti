@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # This file is part of the Wapiti project (https://wapiti-scanner.github.io)
-# Copyright (C) 2008-2022 Nicolas Surribas
+# Copyright (C) 2008-2023 Nicolas Surribas
+# Copyright (C) 2020-2024 Cyberwatch
 #
 # Original authors :
 # Alberto Pastor
@@ -163,7 +164,7 @@ class XMLReportGenerator(JSONReportGenerator):
                     wstg_code_node.appendChild(self._xml_doc.createTextNode(wstg_code))
                     wstg_node.appendChild(wstg_code_node)
                 entry_node.appendChild(wstg_node)
-                if self._infos["detailed_report"] is True:
+                if self._infos["detailed_report_level"]:
                     entry_node.appendChild(self._create_detail_section(flaw))
                 entries_node.appendChild(entry_node)
             flaw_type_node.appendChild(entries_node)
@@ -252,9 +253,6 @@ class XMLReportGenerator(JSONReportGenerator):
             auth_dict = self._infos["auth"]
             is_logged_in = "true" if auth_dict["logged_in"] is True else "false"
 
-            auth_method_node = self._xml_doc.createElement("method")
-            auth_method_node.appendChild(self._xml_doc.createTextNode(auth_dict["method"]))
-            auth_node.appendChild(auth_method_node)
             auth_url_node = self._xml_doc.createElement("url")
             auth_url_node.appendChild(self._xml_doc.createTextNode(auth_dict["url"]))
             auth_node.appendChild(auth_url_node)
@@ -278,7 +276,7 @@ class XMLReportGenerator(JSONReportGenerator):
         else:
             auth_node.setAttributeNS("http://www.w3.org/2001/XMLSchema-instance", "xsi:nil", "true")
         report_infos.appendChild(auth_node)
-        if self._infos["detailed_report"]:
+        if self._infos["detailed_report_level"]:
             report_infos.appendChild(self._create_crawled_pages_section(self._infos["crawled_pages"]))
         return report_infos
 

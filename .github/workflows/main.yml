@@ -7,29 +7,29 @@ on: [push, pull_request]
 jobs:
   code_style:
     name: Code Style Analysis
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v1
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: "3.10"
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e .
-          pip install "pylint==2.11.1"
-          pip install "pylint-ignore==2021.1020"
+          pip install "pylint==2.12.2"
+          pip install "pylint-ignore==2022.1025"
       - name: Pylint
         run: |
-          pylint-ignore --rcfile=.pylintrc *.py wapitiCore
+          pylint-ignore --rcfile=.pylintrc wapitiCore
 
   docker:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - name: Set up Docker
-        uses: docker/setup-buildx-action@v1
+        uses: docker/setup-buildx-action@v3
         id: buildx
         with:
           install: true
@@ -38,14 +38,14 @@ jobs:
           docker build .
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       matrix:
-        python-version: [3.7, 3.8, 3.9]
+        python-version: ["3.10", "3.11"]
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v4
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
     - name: Display Python version
@@ -53,14 +53,37 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install php7.4-cli php7.4-xml -y --no-install-recommends
+        sudo apt-get install php8.1-cli php8.1-xml sslscan -y --no-install-recommends
         python -m pip install --upgrade pip
         pip install -U setuptools
-        pip3 install .[sslyze]
+        pip3 install .[test]
     - name: Test project
       run: |
-        python setup.py test -vv
+        pytest
     - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v1
+      uses: codecov/codecov-action@v4
       with:
         token: ${{ secrets.CODECOV_TOKEN }}
+
+  integrate:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Docker Compose
+        run: bash ${GITHUB_WORKSPACE}/tests/integration/run.sh
+
+      - name: Archive production artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diff-reports-file
+          path: tests/integration/.dump_diff_file.txt
+
+      - name: Archive production artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: produced-reports
+          path: tests/integration/.test/*
